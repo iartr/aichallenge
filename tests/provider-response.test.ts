@@ -90,17 +90,64 @@ describe("provider response proxy", () => {
     ]);
   });
 
-  it("fixes OpenAI pro reasoning effort to high", () => {
+  it("omits OpenAI reasoning when effort is off", () => {
+    const request = buildOpenAIRequest({
+      ...openAIInput,
+      reasoning_effort: "off",
+      reasoning_summary: "off",
+    });
+
+    expect(request).not.toHaveProperty("reasoning");
+  });
+
+  it("allows OpenAI pro reasoning to be omitted or explicitly high", () => {
+    const omittedRequest = buildOpenAIRequest({
+      ...openAIInput,
+      model: "gpt-5.5-pro-2026-04-23",
+      temperature: "",
+      reasoning_effort: "off",
+      reasoning_summary: "off",
+    });
     const request = buildOpenAIRequest({
       ...openAIInput,
       model: "gpt-5.5-pro-2026-04-23",
-      reasoning_effort: "",
+      temperature: "",
+      reasoning_effort: "high",
     });
 
+    expect(omittedRequest).not.toHaveProperty("reasoning");
     expect(request.reasoning).toEqual({
       effort: "high",
       summary: "auto",
     });
+  });
+
+  it("rejects unsupported OpenAI sampling before provider fetch", () => {
+    expect(() =>
+      buildOpenAIRequest({
+        ...openAIInput,
+        model: "gpt-5.4-nano-2026-03-17",
+        reasoning_effort: "off",
+      }),
+    ).toThrow("gpt-5.4-nano-2026-03-17 does not support temperature");
+  });
+
+  it("builds OpenAI nano payload without sampling or reasoning when controls are off", () => {
+    const request = buildOpenAIRequest({
+      ...openAIInput,
+      model: "gpt-5.4-nano-2026-03-17",
+      temperature: "",
+      reasoning_effort: "off",
+      reasoning_summary: "off",
+    });
+
+    expect(request).toMatchObject({
+      model: "gpt-5.4-nano-2026-03-17",
+      max_output_tokens: 500,
+    });
+    expect(request).not.toHaveProperty("temperature");
+    expect(request).not.toHaveProperty("top_p");
+    expect(request).not.toHaveProperty("reasoning");
   });
 
   it("builds Anthropic payload with thinking, effort, and messages", () => {

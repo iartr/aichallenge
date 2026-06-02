@@ -11,7 +11,9 @@ import {
   getModelsForProvider,
   type AnthropicThinkingMode,
   type ModelId,
+  type ModelOption,
   type OpenAIReasoningEffort,
+  type OpenAISamplingControl,
   type ProviderOption,
 } from "@/lib/models";
 
@@ -52,7 +54,7 @@ export function RawConsole() {
   const [activeSampler, setActiveSampler] = useState<Sampler | null>("temperature");
   const [topK, setTopK] = useState("");
   const [maxOutputTokens, setMaxOutputTokens] = useState("1200");
-  const [openAIReasoningEffort, setOpenAIReasoningEffort] = useState<OpenAIReasoningEffort>("medium");
+  const [openAIReasoningEffort, setOpenAIReasoningEffort] = useState<OpenAIReasoningEffort>("off");
   const [openAIReasoningSummary, setOpenAIReasoningSummary] = useState("off");
   const [textVerbosity, setTextVerbosity] = useState("medium");
   const [anthropicThinkingMode, setAnthropicThinkingMode] = useState<AnthropicThinkingMode>("disabled");
@@ -71,19 +73,24 @@ export function RawConsole() {
   const isOpenAI = modelConfig.provider === "openai";
   const isAnthropic = modelConfig.provider === "anthropic";
   const anthropicThinkingEnabled = isAnthropic && anthropicThinkingMode !== "disabled";
+  const supportsTemperature = modelSupportsOpenAISampling(modelConfig, "temperature");
+  const supportsTopP = modelSupportsOpenAISampling(modelConfig, "top_p");
   const temperatureDisabledReason =
-    anthropicThinkingEnabled
+    isOpenAI && !supportsTemperature
+      ? "unsupported by model"
+      : anthropicThinkingEnabled
       ? "blocked by thinking"
       : activeSampler === "top_p"
         ? "top_p active"
         : "";
-  const topPDisabledReason = activeSampler === "temperature" ? "temperature active" : "";
+  const topPDisabledReason =
+    isOpenAI && !supportsTopP ? "unsupported by model" : activeSampler === "temperature" ? "temperature active" : "";
   const topKDisabledReason = isOpenAI
     ? "unsupported by OpenAI"
     : anthropicThinkingEnabled
       ? "blocked by thinking"
       : "";
-  const reasoningSummaryDisabled = !isOpenAI || openAIReasoningEffort === "none";
+  const reasoningSummaryDisabled = !isOpenAI || openAIReasoningEffort === "off" || openAIReasoningEffort === "none";
   const thinkingDisplayDisabled = !anthropicThinkingEnabled;
   const manualThinking = isAnthropic && anthropicThinkingMode === "manual";
   const anthroTopPMin = anthropicThinkingEnabled ? 0.95 : 0;
@@ -117,12 +124,38 @@ export function RawConsole() {
       setAnthropicThinkingMode("disabled");
       setAnthropicEffort("");
       setThinkingBudgetTokens("4096");
+      setTopK("");
+
+      if (nextConfig.samplingControls.includes("temperature")) {
+        if (!temperature && !topP) {
+          setTemperature("0.2");
+          setActiveSampler("temperature");
+        }
+      } else {
+        setTemperature("");
+
+        if (!nextConfig.samplingControls.includes("top_p")) {
+          setTopP("");
+          setActiveSampler(null);
+        } else if (activeSampler === "temperature") {
+          setActiveSampler(topP ? "top_p" : null);
+        }
+      }
+
+      if (!nextConfig.samplingControls.includes("top_p")) {
+        setTopP("");
+
+        if (activeSampler === "top_p") {
+          setActiveSampler(nextConfig.samplingControls.includes("temperature") && temperature ? "temperature" : null);
+        }
+      }
+
       return;
     }
 
     setAnthropicThinkingMode(nextConfig.defaultThinkingMode);
     setAnthropicEffort(nextConfig.defaultEffort ?? "");
-    setOpenAIReasoningEffort("medium");
+    setOpenAIReasoningEffort("off");
     setOpenAIReasoningSummary("off");
     setTextVerbosity("medium");
 
@@ -223,11 +256,11 @@ export function RawConsole() {
       max_output_tokens: maxOutputTokens,
     };
 
-    if (activeSampler === "temperature" && temperature) {
+    if (activeSampler === "temperature" && temperature && (!isOpenAI || supportsTemperature)) {
       payload.temperature = temperature;
     }
 
-    if (activeSampler === "top_p" && topP) {
+    if (activeSampler === "top_p" && topP && (!isOpenAI || supportsTopP)) {
       payload.top_p = topP;
     }
 
@@ -354,16 +387,11 @@ export function RawConsole() {
                 <span>reasoning.effort</span>
                 <select
                   value={openAIReasoningEffort}
-                  disabled={Boolean(
-                    modelConfig.provider === "openai" &&
-                      "fixedReasoningEffort" in modelConfig &&
-                      modelConfig.fixedReasoningEffort,
-                  )}
                   onChange={(event) => {
                     const nextEffort = event.target.value as OpenAIReasoningEffort;
                     setOpenAIReasoningEffort(nextEffort);
 
-                    if (nextEffort === "none") {
+                    if (nextEffort === "off" || nextEffort === "none") {
                       setOpenAIReasoningSummary("off");
                     }
                   }}
@@ -487,7 +515,7 @@ export function RawConsole() {
                 min="0"
                 max={isAnthropic ? 1 : 2}
                 step="0.1"
-                value={temperature}
+                value={temperatureDisabledReason === "unsupported by model" ? "" : temperature}
                 disabled={Boolean(temperatureDisabledReason)}
                 title={temperatureDisabledReason}
                 onChange={(event) => handleTemperatureChange(event.target.value)}
@@ -500,7 +528,7 @@ export function RawConsole() {
                 min={anthroTopPMin}
                 max="1"
                 step="0.05"
-                value={topP}
+                value={topPDisabledReason === "unsupported by model" ? "" : topP}
                 disabled={Boolean(topPDisabledReason)}
                 title={topPDisabledReason}
                 onChange={(event) => handleTopPChange(event.target.value)}
@@ -589,6 +617,13 @@ export function RawConsole() {
       </form>
     </main>
   );
+}
+
+function modelSupportsOpenAISampling(
+  modelConfig: ModelOption,
+  control: OpenAISamplingControl,
+) {
+  return modelConfig.provider !== "openai" || modelConfig.samplingControls.includes(control);
 }
 
 function JsonPane({ title, value, empty }: { title: string; value: unknown; empty: string }) {

@@ -12,6 +12,7 @@ import {
   type AnthropicThinkingDisplay,
   type AnthropicThinkingMode,
   type ModelId,
+  type OpenAISamplingControl,
   type OpenAIModelOption,
   type OpenAIReasoningEffort,
   type OpenAIReasoningSummary,
@@ -70,7 +71,7 @@ export type OpenAIResponsesPayload = {
   top_p?: number;
   max_output_tokens?: number;
   reasoning?: {
-    effort?: OpenAIReasoningEffort;
+    effort?: Exclude<OpenAIReasoningEffort, "off">;
     summary?: Exclude<OpenAIReasoningSummary, "off">;
   };
   text?: {
@@ -163,7 +164,7 @@ export function buildProviderRequest(input: ClientProviderRequest): ProviderPayl
 export function buildOpenAIRequest(input: ClientProviderRequest): OpenAIResponsesPayload {
   const model = readOpenAIModel(input.model);
   const { text, systemPrompt, userText, assistantPrompt } = readPrompts(input);
-  const { temperature, topP } = readSampling(input, { temperatureMax: 2, topPMin: 0 });
+  const { temperature, topP } = readOpenAISampling(input, model);
   const maxOutputTokens = readInteger(firstPresent(input.max_output_tokens, input.max_tokens), "max_output_tokens", 1, 200000);
   const reasoningEffort = readOpenAIReasoningEffort(input.reasoning_effort, model);
   const reasoningSummary = readOpenAIReasoningSummary(input.reasoning_summary);
@@ -174,8 +175,8 @@ export function buildOpenAIRequest(input: ClientProviderRequest): OpenAIResponse
   rejectProvided(input.frequency_penalty, "frequency_penalty is not supported by this OpenAI Responses proxy.");
   rejectProvided(input.presence_penalty, "presence_penalty is not supported by this OpenAI Responses proxy.");
 
-  if (reasoningEffort === "none" && reasoningSummary !== "off") {
-    throw new Error("reasoning_summary requires reasoning effort other than none.");
+  if ((reasoningEffort === "off" || reasoningEffort === "none") && reasoningSummary !== "off") {
+    throw new Error("reasoning_summary requires enabled reasoning effort.");
   }
 
   const messages: OpenAIMessage[] = [];
@@ -205,9 +206,6 @@ export function buildOpenAIRequest(input: ClientProviderRequest): OpenAIResponse
   const request: OpenAIResponsesPayload = {
     model: model.id as ModelId,
     input: messages,
-    reasoning: {
-      effort: reasoningEffort,
-    },
   };
 
   if (systemPrompt) {
@@ -230,6 +228,13 @@ export function buildOpenAIRequest(input: ClientProviderRequest): OpenAIResponse
     request.reasoning = {
       ...request.reasoning,
       summary: reasoningSummary,
+    };
+  }
+
+  if (reasoningEffort !== "off") {
+    request.reasoning = {
+      ...request.reasoning,
+      effort: reasoningEffort,
     };
   }
 
@@ -497,16 +502,6 @@ function readPrompts(input: ClientProviderRequest) {
 }
 
 function readOpenAIReasoningEffort(value: unknown, model: OpenAIModelOption): OpenAIReasoningEffort {
-  if (model.fixedReasoningEffort) {
-    const requested = readOptionalString(value);
-
-    if (requested && requested !== model.fixedReasoningEffort) {
-      throw new Error(`${model.id} only supports ${model.fixedReasoningEffort} reasoning effort.`);
-    }
-
-    return model.fixedReasoningEffort;
-  }
-
   const requested = readOptionalString(value) || model.defaultReasoningEffort;
 
   if (!model.reasoningEfforts.includes(requested as OpenAIReasoningEffort)) {
@@ -518,6 +513,19 @@ function readOpenAIReasoningEffort(value: unknown, model: OpenAIModelOption): Op
 
 function readOpenAIReasoningSummary(value: unknown): OpenAIReasoningSummary {
   return readEnum(value, "reasoning_summary", OPENAI_REASONING_SUMMARIES) ?? "off";
+}
+
+function readOpenAISampling(input: ClientProviderRequest, model: OpenAIModelOption) {
+  rejectUnsupportedOpenAISampling(input.temperature, "temperature", model);
+  rejectUnsupportedOpenAISampling(input.top_p, "top_p", model);
+
+  return readSampling(input, { temperatureMax: 2, topPMin: 0 });
+}
+
+function rejectUnsupportedOpenAISampling(value: unknown, fieldName: OpenAISamplingControl, model: OpenAIModelOption) {
+  if (value !== "" && value !== null && value !== undefined && !model.samplingControls.includes(fieldName)) {
+    throw new Error(`${model.id} does not support ${fieldName}.`);
+  }
 }
 
 function readAnthropicThinkingMode(value: unknown, model: AnthropicModelOption): AnthropicThinkingMode {

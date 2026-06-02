@@ -2,8 +2,9 @@ export const PROVIDER_OPTIONS = ["openai", "anthropic"] as const;
 
 export type ProviderOption = (typeof PROVIDER_OPTIONS)[number];
 
-export const OPENAI_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
+export const OPENAI_REASONING_EFFORTS = ["off", "none", "low", "medium", "high", "xhigh"] as const;
 export const OPENAI_REASONING_SUMMARIES = ["off", "auto", "concise", "detailed"] as const;
+export const OPENAI_SAMPLING_CONTROLS = ["temperature", "top_p"] as const;
 export const TEXT_VERBOSITIES = ["low", "medium", "high"] as const;
 export const ANTHROPIC_THINKING_MODES = ["disabled", "adaptive", "manual"] as const;
 export const ANTHROPIC_THINKING_DISPLAYS = ["summarized", "omitted"] as const;
@@ -11,6 +12,7 @@ export const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as co
 
 export type OpenAIReasoningEffort = (typeof OPENAI_REASONING_EFFORTS)[number];
 export type OpenAIReasoningSummary = (typeof OPENAI_REASONING_SUMMARIES)[number];
+export type OpenAISamplingControl = (typeof OPENAI_SAMPLING_CONTROLS)[number];
 export type TextVerbosity = (typeof TEXT_VERBOSITIES)[number];
 export type AnthropicThinkingMode = (typeof ANTHROPIC_THINKING_MODES)[number];
 export type AnthropicThinkingDisplay = (typeof ANTHROPIC_THINKING_DISPLAYS)[number];
@@ -26,7 +28,7 @@ export type OpenAIModelOption = BaseModelOption & {
   provider: "openai";
   reasoningEfforts: readonly OpenAIReasoningEffort[];
   defaultReasoningEffort: OpenAIReasoningEffort;
-  fixedReasoningEffort?: OpenAIReasoningEffort;
+  samplingControls: readonly OpenAISamplingControl[];
 };
 
 export type AnthropicModelOption = BaseModelOption & {
@@ -41,7 +43,10 @@ export type AnthropicModelOption = BaseModelOption & {
 export type ModelOption = OpenAIModelOption | AnthropicModelOption;
 
 const OPENAI_BALANCED_EFFORTS = ["low", "medium", "high"] as const;
-const OPENAI_LATEST_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
+const OPENAI_EXPLICIT_BALANCED_EFFORTS = ["off", ...OPENAI_BALANCED_EFFORTS] as const;
+const OPENAI_LATEST_EFFORTS = ["off", "none", "low", "medium", "high", "xhigh"] as const;
+const OPENAI_DEFAULT_SAMPLING = ["temperature", "top_p"] as const;
+const OPENAI_NO_SAMPLING = [] as const;
 
 export const MODEL_OPTIONS = [
   {
@@ -49,51 +54,56 @@ export const MODEL_OPTIONS = [
     label: "GPT-5.5",
     provider: "openai",
     reasoningEfforts: OPENAI_LATEST_EFFORTS,
-    defaultReasoningEffort: "medium",
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_DEFAULT_SAMPLING,
   },
   {
     id: "gpt-5.5-pro-2026-04-23",
     label: "GPT-5.5 Pro",
     provider: "openai",
-    reasoningEfforts: ["high"],
-    defaultReasoningEffort: "high",
-    fixedReasoningEffort: "high",
+    reasoningEfforts: ["off", "high"],
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "gpt-5.5-2026-04-23",
     label: "GPT-5.5 snapshot",
     provider: "openai",
     reasoningEfforts: OPENAI_LATEST_EFFORTS,
-    defaultReasoningEffort: "medium",
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_DEFAULT_SAMPLING,
   },
   {
     id: "gpt-5.4-pro-2026-03-05",
     label: "GPT-5.4 Pro",
     provider: "openai",
-    reasoningEfforts: ["high"],
-    defaultReasoningEffort: "high",
-    fixedReasoningEffort: "high",
+    reasoningEfforts: ["off", "high"],
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "gpt-5.4-2026-03-05",
     label: "GPT-5.4 snapshot",
     provider: "openai",
-    reasoningEfforts: OPENAI_BALANCED_EFFORTS,
-    defaultReasoningEffort: "medium",
+    reasoningEfforts: OPENAI_EXPLICIT_BALANCED_EFFORTS,
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_DEFAULT_SAMPLING,
   },
   {
     id: "gpt-5.4-mini-2026-03-17",
     label: "GPT-5.4 Mini",
     provider: "openai",
-    reasoningEfforts: OPENAI_BALANCED_EFFORTS,
-    defaultReasoningEffort: "medium",
+    reasoningEfforts: OPENAI_EXPLICIT_BALANCED_EFFORTS,
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "gpt-5.4-nano-2026-03-17",
     label: "GPT-5.4 Nano",
     provider: "openai",
-    reasoningEfforts: OPENAI_BALANCED_EFFORTS,
-    defaultReasoningEffort: "low",
+    reasoningEfforts: OPENAI_EXPLICIT_BALANCED_EFFORTS,
+    defaultReasoningEffort: "off",
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "claude-opus-4-8",
