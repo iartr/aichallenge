@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OpenAI Raw Console",
-  description: "Minimal raw JSON console for OpenAI Responses API.",
+  title: "Provider Raw Console",
+  description: "Minimal raw JSON console for OpenAI and Anthropic APIs.",
 };
 
 export default function RootLayout({

@@ -117,6 +117,20 @@ h1 {
   text-transform: uppercase;
 }
 
+.section {
+  display: grid;
+  gap: 10px;
+  border-block: 1px solid var(--line);
+  padding-block: 12px;
+}
+
+.sectionTitle {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 input,
 select,
 textarea {
@@ -137,6 +151,14 @@ select:focus,
 textarea:focus {
   border-color: var(--accent);
   background: #ffffff;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--muted);
+  background: var(--panel-soft);
+  cursor: not-allowed;
 }
 
 textarea {
