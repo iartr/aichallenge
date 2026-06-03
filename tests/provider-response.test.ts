@@ -5,6 +5,7 @@ import {
   OPENAI_RESPONSES_URL,
   buildAnthropicRequest,
   buildOpenAIRequest,
+  extractProviderOutputText,
   handleProviderResponseRequest,
 } from "../lib/provider-response";
 
@@ -238,6 +239,108 @@ describe("provider response proxy", () => {
     );
     expect(result.status).toBe(200);
     expect(JSON.stringify(result.body)).not.toContain("openai-key");
+  });
+
+  it("extracts OpenAI top-level output text before nested output text", () => {
+    const outputText = extractProviderOutputText("openai", {
+      output_text: "Top-level answer",
+      output: [
+        {
+          content: [
+            {
+              type: "output_text",
+              text: "Nested answer",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(outputText).toBe("Top-level answer");
+  });
+
+  it("extracts OpenAI nested output text and ignores reasoning blocks", () => {
+    const outputText = extractProviderOutputText("openai", {
+      output: [
+        {
+          type: "reasoning",
+          content: [
+            {
+              type: "summary_text",
+              text: "Hidden reasoning",
+            },
+          ],
+        },
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "First answer",
+            },
+            {
+              type: "refusal",
+              refusal: "Ignored refusal metadata",
+            },
+            {
+              type: "output_text",
+              text: "Second answer",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(outputText).toBe("First answer\nSecond answer");
+  });
+
+  it("extracts Anthropic text blocks and ignores thinking blocks", () => {
+    const outputText = extractProviderOutputText("anthropic", {
+      content: [
+        {
+          type: "thinking",
+          thinking: "Hidden thinking",
+        },
+        {
+          type: "text",
+          text: "First answer",
+        },
+        {
+          type: "text",
+          text: "Second answer",
+        },
+      ],
+    });
+
+    expect(outputText).toBe("First answer\nSecond answer");
+  });
+
+  it("returns an empty output text fallback when provider text is absent", () => {
+    expect(
+      extractProviderOutputText("openai", {
+        output: [
+          {
+            type: "reasoning",
+            content: [
+              {
+                type: "summary_text",
+                text: "Reasoning only",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe("");
+    expect(
+      extractProviderOutputText("anthropic", {
+        content: [
+          {
+            type: "thinking",
+            thinking: "Thinking only",
+          },
+        ],
+      }),
+    ).toBe("");
   });
 
   it("returns provider-specific API key configuration errors before fetch", async () => {

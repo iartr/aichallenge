@@ -22,18 +22,21 @@ type ResponseState =
       status: "idle";
       request: unknown;
       response: unknown;
+      outputText: string;
       message: string;
     }
   | {
       status: "loading";
       request: unknown;
       response: unknown;
+      outputText: string;
       message: string;
     }
   | {
       status: "done" | "error";
       request: unknown;
       response: unknown;
+      outputText: string;
       message: string;
     };
 
@@ -65,6 +68,7 @@ export function RawConsole() {
     status: "idle",
     request: null,
     response: null,
+    outputText: "",
     message: "Ready",
   });
 
@@ -242,7 +246,8 @@ export function RawConsole() {
       status: "loading",
       request: state.request,
       response: state.response,
-      message: "Sending",
+      outputText: "",
+      message: "Waiting for response",
     });
 
     const payload: Record<string, string> = {
@@ -295,36 +300,46 @@ export function RawConsole() {
       const data = (await response.json()) as {
         request?: unknown;
         response?: unknown;
+        outputText?: unknown;
         error?: {
-          message?: string;
+          message?: unknown;
         };
       };
 
       if (!response.ok) {
+        const message = readResponseErrorMessage(data, response.status);
+
         setState({
           status: "error",
           request: data.request ?? null,
           response: data.response ?? data,
-          message: data.error?.message ?? `Request failed with ${response.status}`,
+          outputText: message,
+          message,
         });
         return;
       }
+
+      const outputText = typeof data.outputText === "string" ? data.outputText : "";
 
       setState({
         status: "done",
         request: data.request ?? null,
         response: data.response ?? data,
-        message: "Done",
+        outputText,
+        message: outputText ? "Done" : "No text output",
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Network error";
+
       setState({
         status: "error",
         request: null,
         response: {
           error: {
-            message: error instanceof Error ? error.message : "Network error",
+            message,
           },
         },
+        outputText: message,
         message: "Network error",
       });
     }
@@ -337,7 +352,9 @@ export function RawConsole() {
           <p className="eyebrow">Provider API Console</p>
           <h1>Raw Console</h1>
         </div>
-        <div className={`status ${state.status}`}>{state.message}</div>
+        <div className={`status ${state.status}`} role="status" aria-live="polite">
+          {state.message}
+        </div>
       </header>
 
       <form className="workspace" onSubmit={submit}>
@@ -606,13 +623,18 @@ export function RawConsole() {
           </label>
 
           <button className="submit" type="submit" disabled={state.status === "loading"}>
-            {state.status === "loading" ? "Sending..." : "Send request"}
+            {state.status === "loading" ? "Waiting..." : "Send request"}
           </button>
         </section>
 
-        <section className="panes" aria-label="Raw JSON">
+        <section className="panes" aria-label="Console output">
           <JsonPane title="raw json input" value={state.request} empty="Request appears here after submit." />
-          <JsonPane title="raw json output" value={state.response} empty="Response appears here after submit." />
+          <TextPane
+            title="llm output"
+            text={state.outputText}
+            status={state.status}
+            empty="LLM text appears here after submit."
+          />
         </section>
       </form>
     </main>
@@ -628,9 +650,69 @@ function modelSupportsOpenAISampling(
 
 function JsonPane({ title, value, empty }: { title: string; value: unknown; empty: string }) {
   return (
-    <article className="jsonPane">
+    <article className="consolePane jsonPane">
       <div className="paneTitle">{title}</div>
       <pre>{value === null ? empty : JSON.stringify(value, null, 2)}</pre>
     </article>
   );
+}
+
+function TextPane({
+  title,
+  text,
+  status,
+  empty,
+}: {
+  title: string;
+  text: string;
+  status: ResponseState["status"];
+  empty: string;
+}) {
+  const isLoading = status === "loading";
+  const content = isLoading ? "Waiting for LLM response..." : text || empty;
+
+  return (
+    <article className={`consolePane textPane ${isLoading ? "loadingPane" : ""}`} aria-busy={isLoading}>
+      <div className="paneTitle">{title}</div>
+      <pre className="textOutput">{content}</pre>
+    </article>
+  );
+}
+
+function readResponseErrorMessage(
+  data: {
+    response?: unknown;
+    error?: {
+      message?: unknown;
+    };
+  },
+  status: number,
+) {
+  if (typeof data.error?.message === "string" && data.error.message.trim()) {
+    return data.error.message.trim();
+  }
+
+  const providerError = readProviderErrorMessage(data.response);
+
+  return providerError || `Request failed with ${status}`;
+}
+
+function readProviderErrorMessage(value: unknown): string {
+  if (!isRecord(value)) {
+    return "";
+  }
+
+  if (typeof value.message === "string" && value.message.trim()) {
+    return value.message.trim();
+  }
+
+  if (isRecord(value.error) && typeof value.error.message === "string" && value.error.message.trim()) {
+    return value.error.message.trim();
+  }
+
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
