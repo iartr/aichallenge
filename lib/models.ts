@@ -4,6 +4,7 @@ export type ProviderOption = (typeof PROVIDER_OPTIONS)[number];
 
 export const OPENAI_REASONING_EFFORTS = ["off", "none", "low", "medium", "high", "xhigh"] as const;
 export const OPENAI_REASONING_SUMMARIES = ["off", "auto", "concise", "detailed"] as const;
+export const SAMPLING_CONTROLS = ["temperature", "top_p", "top_k"] as const;
 export const OPENAI_SAMPLING_CONTROLS = ["temperature", "top_p"] as const;
 export const TEXT_VERBOSITIES = ["low", "medium", "high"] as const;
 export const ANTHROPIC_THINKING_MODES = ["disabled", "adaptive", "manual"] as const;
@@ -12,6 +13,7 @@ export const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as co
 
 export type OpenAIReasoningEffort = (typeof OPENAI_REASONING_EFFORTS)[number];
 export type OpenAIReasoningSummary = (typeof OPENAI_REASONING_SUMMARIES)[number];
+export type SamplingControl = (typeof SAMPLING_CONTROLS)[number];
 export type OpenAISamplingControl = (typeof OPENAI_SAMPLING_CONTROLS)[number];
 export type TextVerbosity = (typeof TEXT_VERBOSITIES)[number];
 export type AnthropicThinkingMode = (typeof ANTHROPIC_THINKING_MODES)[number];
@@ -37,6 +39,7 @@ export type AnthropicModelOption = BaseModelOption & {
   defaultThinkingMode: AnthropicThinkingMode;
   efforts: readonly AnthropicEffort[];
   defaultEffort?: AnthropicEffort;
+  samplingControls: readonly SamplingControl[];
   maxTokens: number;
 };
 
@@ -47,6 +50,9 @@ const OPENAI_EXPLICIT_BALANCED_EFFORTS = ["off", ...OPENAI_BALANCED_EFFORTS] as 
 const OPENAI_LATEST_EFFORTS = ["off", "none", "low", "medium", "high", "xhigh"] as const;
 const OPENAI_DEFAULT_SAMPLING = ["temperature", "top_p"] as const;
 const OPENAI_NO_SAMPLING = [] as const;
+const ANTHROPIC_DEFAULT_SAMPLING = ["temperature", "top_p", "top_k"] as const;
+const ANTHROPIC_NO_SAMPLING = [] as const;
+const ANTHROPIC_NO_TOP_K_SAMPLING = ["temperature", "top_p"] as const;
 
 export const MODEL_OPTIONS = [
   {
@@ -55,7 +61,7 @@ export const MODEL_OPTIONS = [
     provider: "openai",
     reasoningEfforts: OPENAI_LATEST_EFFORTS,
     defaultReasoningEffort: "off",
-    samplingControls: OPENAI_DEFAULT_SAMPLING,
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "gpt-5.5-pro-2026-04-23",
@@ -71,7 +77,7 @@ export const MODEL_OPTIONS = [
     provider: "openai",
     reasoningEfforts: OPENAI_LATEST_EFFORTS,
     defaultReasoningEffort: "off",
-    samplingControls: OPENAI_DEFAULT_SAMPLING,
+    samplingControls: OPENAI_NO_SAMPLING,
   },
   {
     id: "gpt-5.4-pro-2026-03-05",
@@ -95,7 +101,7 @@ export const MODEL_OPTIONS = [
     provider: "openai",
     reasoningEfforts: OPENAI_EXPLICIT_BALANCED_EFFORTS,
     defaultReasoningEffort: "off",
-    samplingControls: OPENAI_NO_SAMPLING,
+    samplingControls: OPENAI_DEFAULT_SAMPLING,
   },
   {
     id: "gpt-5.4-nano-2026-03-17",
@@ -103,7 +109,7 @@ export const MODEL_OPTIONS = [
     provider: "openai",
     reasoningEfforts: OPENAI_EXPLICIT_BALANCED_EFFORTS,
     defaultReasoningEffort: "off",
-    samplingControls: OPENAI_NO_SAMPLING,
+    samplingControls: OPENAI_DEFAULT_SAMPLING,
   },
   {
     id: "claude-opus-4-8",
@@ -113,6 +119,7 @@ export const MODEL_OPTIONS = [
     defaultThinkingMode: "disabled",
     efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
+    samplingControls: ANTHROPIC_NO_SAMPLING,
     maxTokens: 128000,
   },
   {
@@ -123,6 +130,7 @@ export const MODEL_OPTIONS = [
     defaultThinkingMode: "adaptive",
     efforts: ["low", "medium", "high", "max"],
     defaultEffort: "medium",
+    samplingControls: ANTHROPIC_NO_TOP_K_SAMPLING,
     maxTokens: 64000,
   },
   {
@@ -132,6 +140,7 @@ export const MODEL_OPTIONS = [
     thinkingModes: ["disabled", "manual"],
     defaultThinkingMode: "disabled",
     efforts: [],
+    samplingControls: ANTHROPIC_DEFAULT_SAMPLING,
     maxTokens: 64000,
   },
 ] as const satisfies readonly ModelOption[];
