@@ -12,7 +12,7 @@ import {
 const openAIInput = {
   secret: "local-secret",
   provider: "openai",
-  model: "gpt-5.5",
+  model: "gpt-5.4-2026-03-05",
   text: "Main input",
   systemPrompt: "System rules",
   userPrompt: "User prefix",
@@ -57,7 +57,7 @@ describe("provider response proxy", () => {
     const request = buildOpenAIRequest(openAIInput);
 
     expect(request).toMatchObject({
-      model: "gpt-5.5",
+      model: "gpt-5.4-2026-03-05",
       instructions: "System rules",
       temperature: 0.3,
       max_output_tokens: 500,
@@ -123,32 +123,69 @@ describe("provider response proxy", () => {
     });
   });
 
-  it("rejects unsupported OpenAI sampling before provider fetch", () => {
+  it("rejects unsupported GPT-5.5 sampling before provider fetch", () => {
     expect(() =>
       buildOpenAIRequest({
         ...openAIInput,
-        model: "gpt-5.4-nano-2026-03-17",
+        model: "gpt-5.5",
         reasoning_effort: "off",
       }),
-    ).toThrow("gpt-5.4-nano-2026-03-17 does not support temperature");
+    ).toThrow("gpt-5.5 does not support temperature");
+    expect(() =>
+      buildOpenAIRequest({
+        ...openAIInput,
+        model: "gpt-5.5-2026-04-23",
+        temperature: "",
+        top_p: "0.9",
+        reasoning_effort: "off",
+      }),
+    ).toThrow("gpt-5.5-2026-04-23 does not support top_p");
   });
 
-  it("builds OpenAI nano payload without sampling or reasoning when controls are off", () => {
+  it("builds GPT-5.5 payload without sampling when controls are empty", () => {
     const request = buildOpenAIRequest({
       ...openAIInput,
-      model: "gpt-5.4-nano-2026-03-17",
+      model: "gpt-5.5",
       temperature: "",
       reasoning_effort: "off",
       reasoning_summary: "off",
     });
 
     expect(request).toMatchObject({
-      model: "gpt-5.4-nano-2026-03-17",
+      model: "gpt-5.5",
       max_output_tokens: 500,
     });
     expect(request).not.toHaveProperty("temperature");
     expect(request).not.toHaveProperty("top_p");
     expect(request).not.toHaveProperty("reasoning");
+  });
+
+  it("allows GPT-5.4 mini and nano sampling controls", () => {
+    const miniRequest = buildOpenAIRequest({
+      ...openAIInput,
+      model: "gpt-5.4-mini-2026-03-17",
+      temperature: "0.4",
+      top_p: "",
+      reasoning_effort: "off",
+      reasoning_summary: "off",
+    });
+    const nanoRequest = buildOpenAIRequest({
+      ...openAIInput,
+      model: "gpt-5.4-nano-2026-03-17",
+      temperature: "",
+      top_p: "0.9",
+      reasoning_effort: "off",
+      reasoning_summary: "off",
+    });
+
+    expect(miniRequest).toMatchObject({
+      model: "gpt-5.4-mini-2026-03-17",
+      temperature: 0.4,
+    });
+    expect(nanoRequest).toMatchObject({
+      model: "gpt-5.4-nano-2026-03-17",
+      top_p: 0.9,
+    });
   });
 
   it("builds Anthropic payload with thinking, effort, and messages", () => {
@@ -176,6 +213,52 @@ describe("provider response proxy", () => {
           content: "User prefix\n\nMain input",
         },
       ],
+    });
+  });
+
+  it("rejects unsupported Anthropic sampling before provider fetch", () => {
+    expect(() =>
+      buildAnthropicRequest({
+        ...anthropicInput,
+        model: "claude-opus-4-8",
+        temperature: "0.2",
+        top_p: "",
+        thinking_mode: "disabled",
+      }),
+    ).toThrow("claude-opus-4-8 does not support temperature");
+    expect(() =>
+      buildAnthropicRequest({
+        ...anthropicInput,
+        model: "claude-opus-4-8",
+        thinking_mode: "disabled",
+      }),
+    ).toThrow("claude-opus-4-8 does not support top_p");
+    expect(() =>
+      buildAnthropicRequest({
+        ...anthropicInput,
+        top_p: "",
+        top_k: "5",
+        thinking_mode: "disabled",
+      }),
+    ).toThrow("claude-sonnet-4-6 does not support top_k");
+  });
+
+  it("allows Haiku sampling controls", () => {
+    const request = buildAnthropicRequest({
+      ...anthropicInput,
+      model: "claude-haiku-4-5-20251001",
+      temperature: "0.4",
+      top_p: "",
+      top_k: "5",
+      thinking_mode: "disabled",
+      thinking_display: "",
+      anthropic_effort: "",
+    });
+
+    expect(request).toMatchObject({
+      model: "claude-haiku-4-5-20251001",
+      temperature: 0.4,
+      top_k: 5,
     });
   });
 
@@ -397,6 +480,10 @@ describe("provider response proxy", () => {
     expect(() =>
       buildAnthropicRequest({
         ...anthropicInput,
+        model: "claude-haiku-4-5-20251001",
+        thinking_mode: "manual",
+        thinking_budget_tokens: "1024",
+        anthropic_effort: "",
         top_k: "5",
       }),
     ).toThrow("top_k is not compatible");

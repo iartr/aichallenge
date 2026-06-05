@@ -17,6 +17,7 @@ import {
   type OpenAIReasoningEffort,
   type OpenAIReasoningSummary,
   type ProviderOption,
+  type SamplingControl,
   type TextVerbosity,
 } from "./models";
 
@@ -252,11 +253,7 @@ export function buildAnthropicRequest(input: ClientProviderRequest): AnthropicMe
   const { text, systemPrompt, userText, assistantPrompt } = readPrompts(input);
   const thinkingMode = readAnthropicThinkingMode(input.thinking_mode, model);
   const thinkingEnabled = thinkingMode !== "disabled";
-  const { temperature, topP } = readSampling(input, {
-    temperatureMax: 1,
-    topPMin: thinkingEnabled ? 0.95 : 0,
-  });
-  const topK = readInteger(input.top_k, "top_k", 0, Number.MAX_SAFE_INTEGER);
+  const { temperature, topP, topK } = readAnthropicSampling(input, model, thinkingEnabled);
   const maxTokens = readInteger(firstPresent(input.max_tokens, input.max_output_tokens), "max_tokens", 1, model.maxTokens);
   const thinkingDisplay = readThinkingDisplay(input.thinking_display, thinkingEnabled);
   const anthropicEffort = readAnthropicEffort(input.anthropic_effort, model);
@@ -525,14 +522,38 @@ function readOpenAIReasoningSummary(value: unknown): OpenAIReasoningSummary {
 }
 
 function readOpenAISampling(input: ClientProviderRequest, model: OpenAIModelOption) {
-  rejectUnsupportedOpenAISampling(input.temperature, "temperature", model);
-  rejectUnsupportedOpenAISampling(input.top_p, "top_p", model);
+  rejectUnsupportedSampling(input.temperature, "temperature", model);
+  rejectUnsupportedSampling(input.top_p, "top_p", model);
 
   return readSampling(input, { temperatureMax: 2, topPMin: 0 });
 }
 
-function rejectUnsupportedOpenAISampling(value: unknown, fieldName: OpenAISamplingControl, model: OpenAIModelOption) {
-  if (value !== "" && value !== null && value !== undefined && !model.samplingControls.includes(fieldName)) {
+function readAnthropicSampling(input: ClientProviderRequest, model: AnthropicModelOption, thinkingEnabled: boolean) {
+  rejectUnsupportedSampling(input.temperature, "temperature", model);
+  rejectUnsupportedSampling(input.top_p, "top_p", model);
+  rejectUnsupportedSampling(input.top_k, "top_k", model);
+
+  const { temperature, topP } = readSampling(input, {
+    temperatureMax: 1,
+    topPMin: thinkingEnabled ? 0.95 : 0,
+  });
+  const topK = readInteger(input.top_k, "top_k", 0, Number.MAX_SAFE_INTEGER);
+
+  return {
+    temperature,
+    topP,
+    topK,
+  };
+}
+
+function rejectUnsupportedSampling(
+  value: unknown,
+  fieldName: OpenAISamplingControl | SamplingControl,
+  model: OpenAIModelOption | AnthropicModelOption,
+) {
+  const samplingControls: readonly string[] = model.samplingControls;
+
+  if (value !== "" && value !== null && value !== undefined && !samplingControls.includes(fieldName)) {
     throw new Error(`${model.id} does not support ${fieldName}.`);
   }
 }

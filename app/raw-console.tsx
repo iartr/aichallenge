@@ -13,8 +13,8 @@ import {
   type ModelId,
   type ModelOption,
   type OpenAIReasoningEffort,
-  type OpenAISamplingControl,
   type ProviderOption,
+  type SamplingControl,
 } from "@/lib/models";
 
 type ResponseState =
@@ -77,10 +77,11 @@ export function RawConsole() {
   const isOpenAI = modelConfig.provider === "openai";
   const isAnthropic = modelConfig.provider === "anthropic";
   const anthropicThinkingEnabled = isAnthropic && anthropicThinkingMode !== "disabled";
-  const supportsTemperature = modelSupportsOpenAISampling(modelConfig, "temperature");
-  const supportsTopP = modelSupportsOpenAISampling(modelConfig, "top_p");
+  const supportsTemperature = modelSupportsSampling(modelConfig, "temperature");
+  const supportsTopP = modelSupportsSampling(modelConfig, "top_p");
+  const supportsTopK = modelSupportsSampling(modelConfig, "top_k");
   const temperatureDisabledReason =
-    isOpenAI && !supportsTemperature
+    !supportsTemperature
       ? "unsupported by model"
       : anthropicThinkingEnabled
       ? "blocked by thinking"
@@ -88,9 +89,11 @@ export function RawConsole() {
         ? "top_p active"
         : "";
   const topPDisabledReason =
-    isOpenAI && !supportsTopP ? "unsupported by model" : activeSampler === "temperature" ? "temperature active" : "";
-  const topKDisabledReason = isOpenAI
-    ? "unsupported by OpenAI"
+    !supportsTopP ? "unsupported by model" : activeSampler === "temperature" ? "temperature active" : "";
+  const topKDisabledReason = !supportsTopK
+    ? isOpenAI
+      ? "unsupported by OpenAI"
+      : "unsupported by model"
     : anthropicThinkingEnabled
       ? "blocked by thinking"
       : "";
@@ -114,6 +117,65 @@ export function RawConsole() {
     [],
   );
 
+  function applySamplingDefaults(nextConfig: ModelOption, nextThinkingEnabled: boolean) {
+    const temperatureSupported = modelSupportsSampling(nextConfig, "temperature") && !nextThinkingEnabled;
+    const topPSupported = modelSupportsSampling(nextConfig, "top_p");
+    const topKSupported = modelSupportsSampling(nextConfig, "top_k") && !nextThinkingEnabled;
+    let nextTemperature = temperature;
+    let nextTopP = topP;
+    let nextActiveSampler = activeSampler;
+
+    if (!temperatureSupported) {
+      nextTemperature = "";
+
+      if (nextActiveSampler === "temperature") {
+        nextActiveSampler = null;
+      }
+    }
+
+    if (!topPSupported) {
+      nextTopP = "";
+
+      if (nextActiveSampler === "top_p") {
+        nextActiveSampler = null;
+      }
+    }
+
+    if (nextThinkingEnabled && nextTopP && Number(nextTopP) < 0.95) {
+      nextTopP = "1";
+      nextActiveSampler = "top_p";
+    }
+
+    if (nextActiveSampler === "temperature" && !nextTemperature) {
+      nextActiveSampler = null;
+    }
+
+    if (nextActiveSampler === "top_p" && !nextTopP) {
+      nextActiveSampler = null;
+    }
+
+    if (!nextActiveSampler) {
+      if (temperatureSupported && nextTemperature) {
+        nextActiveSampler = "temperature";
+      } else if (topPSupported && nextTopP) {
+        nextActiveSampler = "top_p";
+      }
+    }
+
+    if (!nextActiveSampler && temperatureSupported && !nextTemperature && !nextTopP) {
+      nextTemperature = "0.2";
+      nextActiveSampler = "temperature";
+    }
+
+    setTemperature(nextTemperature);
+    setTopP(nextTopP);
+    setActiveSampler(nextActiveSampler);
+
+    if (!topKSupported) {
+      setTopK("");
+    }
+  }
+
   function applyModelDefaults(nextModel: ModelId) {
     const nextConfig = getModelOption(nextModel);
 
@@ -128,31 +190,7 @@ export function RawConsole() {
       setAnthropicThinkingMode("disabled");
       setAnthropicEffort("");
       setThinkingBudgetTokens("4096");
-      setTopK("");
-
-      if (nextConfig.samplingControls.includes("temperature")) {
-        if (!temperature && !topP) {
-          setTemperature("0.2");
-          setActiveSampler("temperature");
-        }
-      } else {
-        setTemperature("");
-
-        if (!nextConfig.samplingControls.includes("top_p")) {
-          setTopP("");
-          setActiveSampler(null);
-        } else if (activeSampler === "temperature") {
-          setActiveSampler(topP ? "top_p" : null);
-        }
-      }
-
-      if (!nextConfig.samplingControls.includes("top_p")) {
-        setTopP("");
-
-        if (activeSampler === "top_p") {
-          setActiveSampler(nextConfig.samplingControls.includes("temperature") && temperature ? "temperature" : null);
-        }
-      }
+      applySamplingDefaults(nextConfig, false);
 
       return;
     }
@@ -162,17 +200,7 @@ export function RawConsole() {
     setOpenAIReasoningEffort("off");
     setOpenAIReasoningSummary("off");
     setTextVerbosity("medium");
-
-    if (nextConfig.defaultThinkingMode !== "disabled") {
-      setTemperature("");
-      setTopK("");
-      setActiveSampler(topP ? "top_p" : null);
-
-      if (topP && Number(topP) < 0.95) {
-        setTopP("1");
-        setActiveSampler("top_p");
-      }
-    }
+    applySamplingDefaults(nextConfig, nextConfig.defaultThinkingMode !== "disabled");
   }
 
   function handleProviderChange(nextProvider: ProviderOption) {
@@ -237,6 +265,12 @@ export function RawConsole() {
           setMaxOutputTokens(String(budget + 1));
         }
       }
+      return;
+    }
+
+    if (supportsTemperature && !temperature && !topP) {
+      setTemperature("0.2");
+      setActiveSampler("temperature");
     }
   }
 
@@ -261,11 +295,11 @@ export function RawConsole() {
       max_output_tokens: maxOutputTokens,
     };
 
-    if (activeSampler === "temperature" && temperature && (!isOpenAI || supportsTemperature)) {
+    if (activeSampler === "temperature" && temperature && !temperatureDisabledReason) {
       payload.temperature = temperature;
     }
 
-    if (activeSampler === "top_p" && topP && (!isOpenAI || supportsTopP)) {
+    if (activeSampler === "top_p" && topP && !topPDisabledReason) {
       payload.top_p = topP;
     }
 
@@ -641,11 +675,13 @@ export function RawConsole() {
   );
 }
 
-function modelSupportsOpenAISampling(
+function modelSupportsSampling(
   modelConfig: ModelOption,
-  control: OpenAISamplingControl,
+  control: SamplingControl,
 ) {
-  return modelConfig.provider !== "openai" || modelConfig.samplingControls.includes(control);
+  const samplingControls: readonly string[] = modelConfig.samplingControls;
+
+  return samplingControls.includes(control);
 }
 
 function JsonPane({ title, value, empty }: { title: string; value: unknown; empty: string }) {
