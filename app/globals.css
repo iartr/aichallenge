@@ -213,7 +213,7 @@ textarea {
   min-height: calc(100svh - 118px);
 }
 
-.jsonPane {
+.consolePane {
   display: grid;
   grid-template-rows: auto 1fr;
   min-width: 0;
@@ -221,6 +221,14 @@ textarea {
   border: 1px solid var(--line);
   background: var(--code);
   color: #e7ece2;
+}
+
+.loadingPane {
+  border-color: color-mix(in srgb, var(--accent), black 30%);
+}
+
+.textOutput {
+  color: #f3f7ef;
 }
 
 .paneTitle {
@@ -273,7 +281,7 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .jsonPane {
+  .consolePane {
     min-height: 360px;
   }
 }

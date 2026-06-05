@@ -432,6 +432,7 @@ export async function handleProviderResponseRequest(
         provider: payload.provider,
         request: payload.request,
         response: parsedOutput,
+        outputText: extractProviderOutputText(payload.provider, parsedOutput),
       },
     };
   } catch (error) {
@@ -444,6 +445,14 @@ export async function handleProviderResponseRequest(
       },
     };
   }
+}
+
+export function extractProviderOutputText(provider: ProviderPayload["provider"], output: unknown) {
+  if (provider === "openai") {
+    return extractOpenAIOutputText(output);
+  }
+
+  return extractAnthropicOutputText(output);
 }
 
 function readProvider(value: unknown): ProviderOption {
@@ -585,6 +594,64 @@ function parseJson(value: string) {
   } catch {
     return value;
   }
+}
+
+function extractOpenAIOutputText(output: unknown) {
+  if (!isRecord(output)) {
+    return "";
+  }
+
+  if (typeof output.output_text === "string" && output.output_text.trim()) {
+    return output.output_text.trim();
+  }
+
+  const parts: string[] = [];
+
+  if (Array.isArray(output.output)) {
+    for (const item of output.output) {
+      if (!isRecord(item) || !Array.isArray(item.content)) {
+        continue;
+      }
+
+      for (const content of item.content) {
+        if (
+          isRecord(content) &&
+          content.type === "output_text" &&
+          typeof content.text === "string" &&
+          content.text.trim()
+        ) {
+          parts.push(content.text.trim());
+        }
+      }
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function extractAnthropicOutputText(output: unknown) {
+  if (!isRecord(output) || !Array.isArray(output.content)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+
+  for (const content of output.content) {
+    if (
+      isRecord(content) &&
+      content.type === "text" &&
+      typeof content.text === "string" &&
+      content.text.trim()
+    ) {
+      parts.push(content.text.trim());
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function readRequiredString(value: unknown, fieldName: string) {
