@@ -11,3 +11,8 @@
 
 - Never commit `.env`, `.env.local`, API keys, tokens, or secrets.
 - Keep `OPENAI_API_KEY` and `SECRET` in local environment files only.
+
+## Testing
+
+- Для тестирования бери значения secrets из railway и проверяй в браузере работу на простых запросах.
+- Ни в коем случае не тестируй на тяжелых моделях версии gpt-pro & opus.
