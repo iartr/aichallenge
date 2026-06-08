@@ -1,13 +1,13 @@
 :root {
-  --bg: #f6f5f0;
+  --bg: #f4f6f8;
   --panel: #ffffff;
-  --panel-soft: #ededdf;
-  --text: #171915;
-  --muted: #676b61;
-  --line: #d8d6c8;
-  --accent: #1d765f;
-  --accent-strong: #10543f;
-  --danger: #9b2c2c;
+  --panel-soft: #eef1f4;
+  --text: #121416;
+  --muted: #66707a;
+  --line: #d8dee5;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --danger: #b42318;
   --code: #111510;
 }
 
@@ -27,6 +27,18 @@ body {
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 button,
@@ -166,6 +178,253 @@ textarea {
   min-height: 80px;
 }
 
+.chatShell {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(244, 246, 248, 0.92)),
+    repeating-linear-gradient(90deg, rgba(18, 20, 22, 0.035) 0 1px, transparent 1px 72px);
+}
+
+.chatPanel {
+  width: min(1120px, 100%);
+  height: min(820px, calc(100svh - 40px));
+  min-height: 620px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(18, 20, 22, 0.12);
+  overflow: hidden;
+}
+
+.chatHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.chatEyebrow {
+  margin: 0 0 4px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.chatHeader h1 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1;
+}
+
+.agentStatus {
+  min-width: 132px;
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agentStatus small {
+  max-width: 240px;
+  color: #7d8791;
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentStatus.loading,
+.agentStatus.typing {
+  color: var(--accent-strong);
+}
+
+.agentStatus.error {
+  color: var(--danger);
+}
+
+.chatBody {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 24px;
+  background: #f8fafb;
+}
+
+.message {
+  width: min(760px, 100%);
+  display: grid;
+  gap: 6px;
+  animation: messageIn 180ms ease-out both;
+}
+
+.message.user {
+  align-self: end;
+  justify-items: end;
+}
+
+.message.assistant {
+  align-self: start;
+  justify-items: start;
+}
+
+.messageMeta {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.messageBubble {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px 15px;
+  background: #ffffff;
+  color: var(--text);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user .messageBubble {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.message.error .messageBubble {
+  border-color: color-mix(in srgb, var(--danger), white 55%);
+  background: #fff7f6;
+  color: var(--danger);
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.15em;
+  margin-left: 2px;
+  transform: translateY(3px);
+  background: currentColor;
+  animation: blink 760ms steps(2, start) infinite;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.secretField,
+.promptField {
+  display: grid;
+  gap: 6px;
+}
+
+.secretField span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.composer input,
+.composer textarea {
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.composer textarea {
+  min-height: 76px;
+  max-height: 180px;
+}
+
+.composerActions {
+  display: flex;
+  gap: 8px;
+}
+
+.sendButton,
+.secondaryButton {
+  min-height: 44px;
+  border-radius: 8px;
+  padding: 0 16px;
+  cursor: pointer;
+  font-weight: 850;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.sendButton {
+  border: 1px solid var(--accent-strong);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.sendButton:hover:not(:disabled) {
+  background: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.sendButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.secondaryButton {
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--text);
+}
+
+.secondaryButton:hover {
+  border-color: #aeb8c2;
+  background: #f6f8fa;
+}
+
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
 .grid.two {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -260,9 +519,64 @@ pre {
   .panes {
     min-height: auto;
   }
+
+  .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .composerActions {
+    justify-content: end;
+  }
 }
 
 @media (max-width: 640px) {
+  .chatShell {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .chatPanel {
+    width: 100%;
+    height: 100svh;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .chatHeader {
+    align-items: start;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .agentStatus {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .chatBody {
+    padding: 16px;
+  }
+
+  .message {
+    width: 100%;
+  }
+
+  .composer {
+    padding: 12px;
+  }
+
+  .composerActions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sendButton,
+  .secondaryButton {
+    width: 100%;
+  }
+
   .shell {
     padding: 14px;
   }

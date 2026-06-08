@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Provider Raw Console",
-  description: "Minimal raw JSON console for OpenAI and Anthropic APIs.",
+  title: "Simple Chat Agent",
+  description: "A simple OpenAI-backed chat agent with conversation history.",
 };
 
 export default function RootLayout({
