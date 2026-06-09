@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
+import { AuthConfigError, requireAuthenticatedUser } from "@/lib/auth";
 import { ChatAgentError, OpenAIChatAgent, normalizeAgentMessages } from "@/lib/chat-agent";
-import { validateSecret } from "@/lib/provider-response";
+import {
+  ConversationStoreError,
+  createConversation,
+  getConversation,
+  updateConversation,
+} from "@/lib/conversations";
 
 export const runtime = "nodejs";
+
+const MAX_MESSAGE_LENGTH = 8000;
 
 export async function POST(request: Request) {
   let body: unknown;
@@ -20,50 +28,91 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!process.env.SECRET) {
-    return NextResponse.json(
-      {
-        error: {
-          message: "SECRET is not configured.",
-        },
-      },
-      { status: 500 },
-    );
-  }
-
-  if (!isRecord(body) || !validateSecret(body.secret, process.env.SECRET)) {
-    return NextResponse.json(
-      {
-        error: {
-          message: "Invalid secret.",
-        },
-      },
-      { status: 401 },
-    );
-  }
-
   try {
-    const messages = normalizeAgentMessages(body.messages);
+    const user = requireAuthenticatedUser(request);
+    const { conversationId, message } = readChatRequest(body);
+    const conversation = conversationId ? await getConversation(user.login, conversationId) : null;
+
+    if (conversationId && !conversation) {
+      return errorResponse("Conversation not found.", 404);
+    }
+
+    const messages = normalizeAgentMessages([
+      ...(conversation?.messages ?? []),
+      {
+        role: "user",
+        content: message,
+      },
+    ]);
     const agent = new OpenAIChatAgent({
       apiKey: process.env.OPENAI_API_KEY ?? "",
       model: process.env.OPENAI_CHAT_MODEL,
     });
     const result = await agent.respond(messages);
+    const savedMessages = [
+      ...messages,
+      {
+        role: "assistant" as const,
+        content: result.answer,
+      },
+    ];
+    const savedConversation = conversation
+      ? await updateConversation(user.login, conversation.id, savedMessages)
+      : await createConversation(user.login, savedMessages);
 
-    return NextResponse.json(result);
+    if (!savedConversation) {
+      return errorResponse("Conversation not found.", 404);
+    }
+
+    return NextResponse.json({
+      ...result,
+      conversation: savedConversation,
+    });
   } catch (error) {
-    const status = error instanceof ChatAgentError ? error.status : 500;
+    const status =
+      error instanceof ChatAgentError || error instanceof AuthConfigError || error instanceof ConversationStoreError
+        ? error.status
+        : 500;
     const message = error instanceof Error ? error.message : "Chat agent failed.";
 
-    return NextResponse.json(
-      {
-        error: {
-          message,
-        },
-      },
-      { status },
-    );
+    return errorResponse(message, status);
   }
+}
+
+function readChatRequest(body: unknown) {
+  if (!isRecord(body)) {
+    throw new ChatAgentError("Request body must be an object.");
+  }
+
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+
+  if (!message) {
+    throw new ChatAgentError("message is required.");
+  }
+
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    throw new ChatAgentError(`message must be ${MAX_MESSAGE_LENGTH} characters or fewer.`);
+  }
+
+  if (body.conversationId !== undefined && body.conversationId !== null && typeof body.conversationId !== "string") {
+    throw new ChatAgentError("conversationId must be a string.");
+  }
+
+  return {
+    conversationId: typeof body.conversationId === "string" && body.conversationId.trim() ? body.conversationId.trim() : null,
+    message,
+  };
+}
+
+function errorResponse(message: string, status: number) {
+  return NextResponse.json(
+    {
+      error: {
+        message,
+      },
+    },
+    { status },
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
