@@ -32,6 +32,7 @@ describe("OpenAI chat agent", () => {
     expect(payload).toMatchObject({
       model: "gpt-test",
       max_output_tokens: 900,
+      truncation: "disabled",
     });
     expect(payload.input).toEqual([
       {
@@ -98,11 +99,93 @@ describe("OpenAI chat agent", () => {
         },
       ],
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       answer: "Hello from agent.",
       model: "gpt-test",
+      usage: {
+        currentRequestTokens: expect.any(Number),
+        historyTokens: expect.any(Number),
+        responseTokens: expect.any(Number),
+        totalTokens: expect.any(Number),
+        contextWindowTokens: expect.any(Number),
+        remainingContextTokens: expect.any(Number),
+        estimatedCostUsd: expect.any(Number),
+        failureMode: null,
+      },
     });
     expect(JSON.stringify(result)).not.toContain("openai-key");
+  });
+
+  it("uses provider token usage when OpenAI returns it", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            output_text: "Usage answer.",
+            usage: {
+              input_tokens: 42,
+              input_tokens_details: {
+                cached_tokens: 10,
+              },
+              output_tokens: 7,
+              output_tokens_details: {
+                reasoning_tokens: 2,
+              },
+              total_tokens: 49,
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const agent = new OpenAIChatAgent({
+      apiKey: "openai-key",
+      model: "gpt-5.4-mini-2026-03-17",
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+
+    const result = await agent.respond([
+      {
+        role: "user",
+        content: "Count usage.",
+      },
+    ]);
+
+    expect(result.usage).toMatchObject({
+      historyTokens: 42,
+      responseTokens: 7,
+      totalTokens: 49,
+      cachedInputTokens: 10,
+      reasoningTokens: 2,
+      isEstimate: false,
+    });
+  });
+
+  it("blocks requests before the provider when context window is exceeded", async () => {
+    vi.stubEnv("OPENAI_CONTEXT_WINDOW_TOKENS", "20");
+
+    const fetcher = vi.fn();
+    const agent = new OpenAIChatAgent({
+      apiKey: "openai-key",
+      model: "gpt-test",
+      fetcher: fetcher as unknown as typeof fetch,
+      maxOutputTokens: 10,
+    });
+
+    await expect(
+      agent.respond([
+        {
+          role: "user",
+          content: "This request cannot fit.",
+        },
+      ]),
+    ).rejects.toMatchObject({
+      status: 413,
+      usage: {
+        failureMode: "preflight_context_overflow",
+      },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 
   it("uses a safe lightweight default chat model", async () => {

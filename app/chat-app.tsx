@@ -7,6 +7,7 @@ type ChatRole = "user" | "assistant";
 type StoredChatMessage = {
   role: ChatRole;
   content: string;
+  usage?: MessageTokenUsage;
 };
 
 type ChatMessage = StoredChatMessage & {
@@ -34,6 +35,7 @@ type ApiErrorResponse = {
   error?: {
     message?: unknown;
   };
+  usage?: unknown;
 };
 
 type SessionResponse = ApiErrorResponse & {
@@ -55,6 +57,32 @@ type ConversationResponse = ApiErrorResponse & {
 type AgentChatResponse = ConversationResponse & {
   answer?: unknown;
   model?: unknown;
+  usage?: unknown;
+};
+
+type TokenFailureMode = "preflight_context_overflow" | "provider_context_overflow" | "provider_error";
+
+type TokenUsage = {
+  currentRequestTokens: number;
+  historyTokens: number;
+  responseTokens: number;
+  totalTokens: number;
+  contextWindowTokens: number;
+  remainingContextTokens: number;
+  estimatedCostUsd: number;
+  failureMode: TokenFailureMode | null;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  isEstimate: boolean;
+};
+
+type MessageTokenUsage = TokenUsage & {
+  tokens: number;
+};
+
+type TokenTimelineRow = {
+  turn: number;
+  usage: TokenUsage;
 };
 
 const EMPTY_STATUS_TEXT = "Ready";
@@ -72,6 +100,7 @@ export function ChatApp() {
   const [status, setStatus] = useState<"idle" | "loading" | "typing" | "error">("idle");
   const [statusText, setStatusText] = useState(EMPTY_STATUS_TEXT);
   const [model, setModel] = useState("");
+  const [latestUsage, setLatestUsage] = useState<TokenUsage | null>(null);
   const runIdRef = useRef(0);
   const chatBodyRef = useRef<HTMLDivElement>(null);
 
@@ -81,6 +110,13 @@ export function ChatApp() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+  const persistedUsage = useMemo(() => readLatestMessageUsage(messages), [messages]);
+  const visibleUsage = latestUsage ?? persistedUsage;
+  const tokenTimeline = useMemo(() => buildTokenTimeline(messages), [messages]);
+  const comparisonRows = useMemo(() => buildComparisonRows(tokenTimeline, visibleUsage), [tokenTimeline, visibleUsage]);
+  const contextFill = visibleUsage
+    ? clampPercent((visibleUsage.totalTokens / Math.max(visibleUsage.contextWindowTokens, 1)) * 100)
+    : 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -194,6 +230,7 @@ export function ChatApp() {
     setMessages([]);
     setInput("");
     setModel("");
+    setLatestUsage(null);
     setStatus("idle");
     setStatusText(EMPTY_STATUS_TEXT);
   }
@@ -234,6 +271,7 @@ export function ChatApp() {
 
       setActiveConversationId(data.conversation.id);
       setMessages(toChatMessages(data.conversation));
+      setLatestUsage(null);
       setInput("");
       setStatus("idle");
       setStatusText(EMPTY_STATUS_TEXT);
@@ -258,8 +296,11 @@ export function ChatApp() {
     runIdRef.current = currentRun;
     setInput("");
     setMessages((currentMessages) => [...currentMessages, userMessage, assistantMessage]);
+    setLatestUsage(null);
     setStatus("loading");
     setStatusText("Waiting");
+
+    let returnedUsage: TokenUsage | null = null;
 
     try {
       const response = await fetch("/api/agent-chat", {
@@ -273,6 +314,11 @@ export function ChatApp() {
         }),
       });
       const data = (await response.json()) as AgentChatResponse;
+      returnedUsage = readTokenUsage(data.usage);
+
+      if (returnedUsage) {
+        setLatestUsage(returnedUsage);
+      }
 
       if (!response.ok || !data.conversation) {
         throw new Error(readErrorMessage(data, response.status));
@@ -295,6 +341,7 @@ export function ChatApp() {
       await typeAssistantAnswer(assistantMessage.id, answer, currentRun);
 
       if (runIdRef.current === currentRun) {
+        setMessages(toChatMessages(data.conversation));
         setStatus("idle");
         setStatusText(EMPTY_STATUS_TEXT);
       }
@@ -303,6 +350,10 @@ export function ChatApp() {
 
       if (runIdRef.current !== currentRun) {
         return;
+      }
+
+      if (returnedUsage) {
+        setLatestUsage(returnedUsage);
       }
 
       setMessages((currentMessages) =>
@@ -350,6 +401,7 @@ export function ChatApp() {
     setStatus("idle");
     setStatusText(EMPTY_STATUS_TEXT);
     setModel("");
+    setLatestUsage(null);
   }
 
   function upsertConversation(conversation: ConversationRecord) {
@@ -375,7 +427,7 @@ export function ChatApp() {
       <main className="chatShell">
         <section className="loginPanel" aria-label="Admin login">
           <header className="loginHeader">
-            <p className="chatEyebrow">Week2 / Day2</p>
+            <p className="chatEyebrow">Week2 / Day3</p>
             <h1>Persistent Agent</h1>
           </header>
           <form className="loginForm" onSubmit={loginUser}>
@@ -418,7 +470,7 @@ export function ChatApp() {
         <aside className="conversationSidebar" aria-label="Dialog history">
           <div className="sidebarTop">
             <div>
-              <p className="chatEyebrow">Week2 / Day2</p>
+              <p className="chatEyebrow">Week2 / Day3</p>
               <h1>Persistent Agent</h1>
             </div>
             <button className="iconButton" type="button" onClick={startNewChat} title="New chat" aria-label="New chat">
@@ -460,11 +512,101 @@ export function ChatApp() {
             </div>
           </header>
 
+          <section className="tokenPanel" aria-label="Token accounting">
+            <div className="tokenDashboard">
+              <div>
+                <span>Request</span>
+                <strong>{formatTokens(visibleUsage?.currentRequestTokens ?? 0)}</strong>
+              </div>
+              <div>
+                <span>History</span>
+                <strong>{formatTokens(visibleUsage?.historyTokens ?? 0)}</strong>
+              </div>
+              <div>
+                <span>Response</span>
+                <strong>{formatTokens(visibleUsage?.responseTokens ?? 0)}</strong>
+              </div>
+              <div>
+                <span>Total</span>
+                <strong>{formatTokens(visibleUsage?.totalTokens ?? 0)}</strong>
+              </div>
+              <div>
+                <span>Window</span>
+                <strong>{formatTokens(visibleUsage?.contextWindowTokens ?? 0)}</strong>
+              </div>
+              <div>
+                <span>Cost</span>
+                <strong>{formatUsd(visibleUsage?.estimatedCostUsd ?? 0)}</strong>
+              </div>
+            </div>
+
+            <div className={`contextMeter ${visibleUsage?.failureMode ? "danger" : ""}`} aria-hidden="true">
+              <span style={{ width: `${contextFill}%` }} />
+            </div>
+
+            <div className="tokenTables">
+              <table>
+                <caption>Growth</caption>
+                <thead>
+                  <tr>
+                    <th>Turn</th>
+                    <th>History</th>
+                    <th>Answer</th>
+                    <th>Total</th>
+                    <th>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tokenTimeline.length ? (
+                    tokenTimeline.map((row) => (
+                      <tr key={row.turn}>
+                        <td>{row.turn}</td>
+                        <td>{formatTokens(row.usage.historyTokens)}</td>
+                        <td>{formatTokens(row.usage.responseTokens)}</td>
+                        <td>{formatTokens(row.usage.totalTokens)}</td>
+                        <td>{formatUsd(row.usage.estimatedCostUsd)}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5}>No turns</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
+              <table>
+                <caption>Comparison</caption>
+                <thead>
+                  <tr>
+                    <th>Dialog</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                    <th>Behavior</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonRows.map((row) => (
+                    <tr key={row.dialog}>
+                      <td>{row.dialog}</td>
+                      <td>{row.tokens}</td>
+                      <td>{row.cost}</td>
+                      <td>{row.behavior}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <div className="chatBody" aria-live="polite" ref={chatBodyRef}>
             {messages.length ? (
               messages.map((message) => (
                 <article className={`message ${message.role} ${message.status ?? "done"}`} key={message.id}>
-                  <div className="messageMeta">{message.role === "user" ? "You" : "Agent"}</div>
+                  <div className="messageMeta">
+                    <span>{message.role === "user" ? "You" : "Agent"}</span>
+                    {message.usage ? <small>{formatTokens(message.usage.tokens)} tok</small> : null}
+                  </div>
                   <div className="messageBubble">
                     {message.content}
                     {message.status === "streaming" ? <span className="caret" aria-hidden="true" /> : null}
@@ -508,6 +650,7 @@ function toChatMessages(conversation: ConversationRecord): ChatMessage[] {
     id: `${conversation.id}-${index}`,
     role: message.role,
     content: message.content,
+    usage: readMessageTokenUsage(message.usage),
     status: "done",
   }));
 }
@@ -531,6 +674,152 @@ function toSummary(conversation: ConversationRecord): ConversationSummary {
   };
 }
 
+function readLatestMessageUsage(messages: ChatMessage[]): TokenUsage | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const usage = messages[index]?.usage;
+
+    if (usage) {
+      return usage;
+    }
+  }
+
+  return null;
+}
+
+function buildTokenTimeline(messages: ChatMessage[]): TokenTimelineRow[] {
+  let turn = 0;
+  const rows: TokenTimelineRow[] = [];
+
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.usage || message.status === "error") {
+      continue;
+    }
+
+    turn += 1;
+    rows.push({
+      turn,
+      usage: message.usage,
+    });
+  }
+
+  return rows.slice(-6);
+}
+
+function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | null) {
+  const shortDialog = timeline[0]?.usage ?? null;
+  const longDialog = timeline.length > 1 ? timeline[timeline.length - 1]?.usage ?? null : null;
+  const contextWindowTokens = usage?.contextWindowTokens ?? longDialog?.contextWindowTokens ?? shortDialog?.contextWindowTokens ?? 0;
+
+  return [
+    {
+      dialog: "Short",
+      tokens: shortDialog ? formatTokens(shortDialog.totalTokens) : "-",
+      cost: shortDialog ? formatUsd(shortDialog.estimatedCostUsd) : "-",
+      behavior: shortDialog ? "Fits" : "Pending",
+    },
+    {
+      dialog: "Long",
+      tokens: longDialog ? formatTokens(longDialog.totalTokens) : "-",
+      cost: longDialog ? formatUsd(longDialog.estimatedCostUsd) : "-",
+      behavior: longDialog ? "Costs more" : "Needs turns",
+    },
+    {
+      dialog: "Overflow",
+      tokens: contextWindowTokens ? `>${formatTokens(contextWindowTokens)}` : "window + 1",
+      cost: "-",
+      behavior: usage?.failureMode ? "Blocked" : "413 guard",
+    },
+  ];
+}
+
+function readMessageTokenUsage(value: unknown): MessageTokenUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const usage = readTokenUsage(value);
+  const tokens = readNumber(value.tokens);
+
+  if (!usage || tokens === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...usage,
+    tokens,
+  };
+}
+
+function readTokenUsage(value: unknown): TokenUsage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const currentRequestTokens = readNumber(value.currentRequestTokens);
+  const historyTokens = readNumber(value.historyTokens);
+  const responseTokens = readNumber(value.responseTokens);
+  const totalTokens = readNumber(value.totalTokens);
+  const contextWindowTokens = readNumber(value.contextWindowTokens);
+  const remainingContextTokens = readNumber(value.remainingContextTokens);
+  const estimatedCostUsd = readNumber(value.estimatedCostUsd);
+
+  if (
+    currentRequestTokens === undefined ||
+    historyTokens === undefined ||
+    responseTokens === undefined ||
+    totalTokens === undefined ||
+    contextWindowTokens === undefined ||
+    remainingContextTokens === undefined ||
+    estimatedCostUsd === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    currentRequestTokens,
+    historyTokens,
+    responseTokens,
+    totalTokens,
+    contextWindowTokens,
+    remainingContextTokens,
+    estimatedCostUsd,
+    failureMode: readFailureMode(value.failureMode),
+    cachedInputTokens: readNumber(value.cachedInputTokens) ?? 0,
+    reasoningTokens: readNumber(value.reasoningTokens) ?? 0,
+    isEstimate: value.isEstimate === true,
+  };
+}
+
+function readFailureMode(value: unknown): TokenFailureMode | null {
+  if (value === "preflight_context_overflow" || value === "provider_context_overflow" || value === "provider_error") {
+    return value;
+  }
+
+  return null;
+}
+
+function readNumber(value: unknown) {
+  const numberValue = typeof value === "number" ? value : Number(value);
+
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : undefined;
+}
+
+function formatTokens(value: number) {
+  return new Intl.NumberFormat("en-US").format(Math.round(value));
+}
+
+function formatUsd(value: number) {
+  if (value > 0 && value < 0.000001) {
+    return "<$0.000001";
+  }
+
+  return `$${value.toFixed(6)}`;
+}
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, value));
+}
+
 function readErrorMessage(data: ApiErrorResponse, status: number) {
   if (typeof data.error?.message === "string" && data.error.message.trim()) {
     return data.error.message.trim();
@@ -552,6 +841,10 @@ function formatUpdatedAt(value: string) {
     minute: "2-digit",
     month: "2-digit",
   }).format(date);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function delay(ms: number) {

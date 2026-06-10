@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import type { AgentChatMessage } from "./chat-agent";
+import { normalizeMessageTokenUsage } from "./token-usage";
 
 export type ConversationSummary = {
   id: string;
@@ -153,10 +154,17 @@ export function normalizeStoredMessages(messages: unknown): AgentChatMessage[] {
     const { role, content } = message;
 
     if ((role === "user" || role === "assistant") && typeof content === "string" && content.trim()) {
-      normalized.push({
+      const usage = normalizeMessageTokenUsage(message.usage);
+      const normalizedMessage: AgentChatMessage = {
         role,
         content: content.trim(),
-      });
+      };
+
+      if (usage) {
+        normalizedMessage.usage = usage;
+      }
+
+      normalized.push(normalizedMessage);
     }
   }
 
