@@ -7,6 +7,7 @@ import {
   getConversation,
   updateConversation,
 } from "@/lib/conversations";
+import { buildMessageTokenUsage, type AgentTokenUsage } from "@/lib/token-usage";
 
 export const runtime = "nodejs";
 
@@ -49,11 +50,20 @@ export async function POST(request: Request) {
       model: process.env.OPENAI_CHAT_MODEL,
     });
     const result = await agent.respond(messages);
+    const latestUserMessage = messages[messages.length - 1] ?? {
+      role: "user" as const,
+      content: message,
+    };
     const savedMessages = [
-      ...messages,
+      ...messages.slice(0, -1),
+      {
+        ...latestUserMessage,
+        usage: buildMessageTokenUsage(result.usage, result.usage.currentRequestTokens),
+      },
       {
         role: "assistant" as const,
         content: result.answer,
+        usage: buildMessageTokenUsage(result.usage, result.usage.responseTokens),
       },
     ];
     const savedConversation = conversation
@@ -74,8 +84,9 @@ export async function POST(request: Request) {
         ? error.status
         : 500;
     const message = error instanceof Error ? error.message : "Chat agent failed.";
+    const usage = error instanceof ChatAgentError ? error.usage : undefined;
 
-    return errorResponse(message, status);
+    return errorResponse(message, status, usage);
   }
 }
 
@@ -104,12 +115,13 @@ function readChatRequest(body: unknown) {
   };
 }
 
-function errorResponse(message: string, status: number) {
+function errorResponse(message: string, status: number, usage?: AgentTokenUsage) {
   return NextResponse.json(
     {
       error: {
         message,
       },
+      ...(usage ? { usage } : {}),
     },
     { status },
   );

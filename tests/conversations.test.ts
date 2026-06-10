@@ -14,6 +14,20 @@ describe("conversation persistence helpers", () => {
         {
           role: "user",
           content: " Hello ",
+          usage: {
+            tokens: 2,
+            currentRequestTokens: 2,
+            historyTokens: 10,
+            responseTokens: 4,
+            totalTokens: 14,
+            contextWindowTokens: 100,
+            remainingContextTokens: 86,
+            estimatedCostUsd: 0.00001,
+            failureMode: null,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            isEstimate: false,
+          },
         },
         {
           role: "system",
@@ -32,6 +46,20 @@ describe("conversation persistence helpers", () => {
       {
         role: "user",
         content: "Hello",
+        usage: {
+          tokens: 2,
+          currentRequestTokens: 2,
+          historyTokens: 10,
+          responseTokens: 4,
+          totalTokens: 14,
+          contextWindowTokens: 100,
+          remainingContextTokens: 86,
+          estimatedCostUsd: 0.00001,
+          failureMode: null,
+          cachedInputTokens: 0,
+          reasoningTokens: 0,
+          isEstimate: false,
+        },
       },
       {
         role: "assistant",

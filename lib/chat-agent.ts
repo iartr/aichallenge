@@ -1,16 +1,30 @@
+import {
+  applyProviderUsage,
+  buildTokenUsageEstimate,
+  markTokenFailure,
+  normalizeMessageTokenUsage,
+  readOpenAIProviderUsage,
+  type AgentMessageTokenUsage,
+  type AgentTokenUsage,
+} from "./token-usage";
+
 export const OPENAI_CHAT_RESPONSES_URL = "https://api.openai.com/v1/responses";
 export const DEFAULT_OPENAI_CHAT_MODEL = "gpt-5.4-mini-2026-03-17";
+export const CHAT_AGENT_INSTRUCTIONS =
+  "You are a concise, helpful chat agent. Keep context from prior messages and answer the user's latest request.";
 
 export type AgentChatRole = "user" | "assistant";
 
 export type AgentChatMessage = {
   role: AgentChatRole;
   content: string;
+  usage?: AgentMessageTokenUsage;
 };
 
 export type OpenAIChatAgentResult = {
   answer: string;
   model: string;
+  usage: AgentTokenUsage;
 };
 
 export type OpenAIChatAgentOptions = {
@@ -39,15 +53,18 @@ type OpenAIChatPayload = {
   instructions: string;
   input: OpenAIChatInputMessage[];
   max_output_tokens: number;
+  truncation: "disabled";
 };
 
 export class ChatAgentError extends Error {
   readonly status: number;
+  readonly usage?: AgentTokenUsage;
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, usage?: AgentTokenUsage) {
     super(message);
     this.name = "ChatAgentError";
     this.status = status;
+    this.usage = usage;
   }
 }
 
@@ -71,6 +88,23 @@ export class OpenAIChatAgent {
 
   async respond(messages: AgentChatMessage[]): Promise<OpenAIChatAgentResult> {
     const normalizedMessages = normalizeAgentMessages(messages);
+    const estimate = buildTokenUsageEstimate({
+      messages: normalizedMessages,
+      instructions: CHAT_AGENT_INSTRUCTIONS,
+      model: this.model,
+      maxOutputTokens: this.maxOutputTokens,
+    });
+
+    if (estimate.historyTokens + this.maxOutputTokens > estimate.contextWindowTokens) {
+      const usage = markTokenFailure(estimate, "preflight_context_overflow");
+
+      throw new ChatAgentError(
+        `Context window exceeded: ${estimate.historyTokens} prompt tokens + ${this.maxOutputTokens} reserved output tokens is larger than ${estimate.contextWindowTokens}.`,
+        413,
+        usage,
+      );
+    }
+
     const payload = buildOpenAIChatPayload(normalizedMessages, this.model, this.maxOutputTokens);
 
     const response = await this.fetcher(OPENAI_CHAT_RESPONSES_URL, {
@@ -85,7 +119,13 @@ export class OpenAIChatAgent {
     const parsedOutput = parseJson(rawOutput);
 
     if (!response.ok) {
-      throw new ChatAgentError(readOpenAIErrorMessage(parsedOutput) || `OpenAI request failed with ${response.status}.`, response.status);
+      const failureMode = response.status === 400 ? "provider_context_overflow" : "provider_error";
+
+      throw new ChatAgentError(
+        readOpenAIErrorMessage(parsedOutput) || `OpenAI request failed with ${response.status}.`,
+        response.status,
+        markTokenFailure(estimate, failureMode),
+      );
     }
 
     const answer = extractOpenAIText(parsedOutput);
@@ -94,9 +134,21 @@ export class OpenAIChatAgent {
       throw new ChatAgentError("OpenAI response did not include text output.", 502);
     }
 
+    const providerUsage = readOpenAIProviderUsage(parsedOutput);
+    const usage = providerUsage
+      ? applyProviderUsage(estimate, providerUsage, this.model)
+      : buildTokenUsageEstimate({
+          messages: normalizedMessages,
+          instructions: CHAT_AGENT_INSTRUCTIONS,
+          model: this.model,
+          maxOutputTokens: this.maxOutputTokens,
+          responseText: answer,
+        });
+
     return {
       answer,
       model: this.model,
+      usage,
     };
   }
 }
@@ -124,6 +176,7 @@ export function normalizeAgentMessages(messages: unknown): AgentChatMessage[] {
     return {
       role,
       content: message.content.trim(),
+      usage: normalizeMessageTokenUsage(message.usage),
     };
   });
 
@@ -145,7 +198,7 @@ export function buildOpenAIChatPayload(
 ): OpenAIChatPayload {
   return {
     model,
-    instructions: "You are a concise, helpful chat agent. Keep context from prior messages and answer the user's latest request.",
+    instructions: CHAT_AGENT_INSTRUCTIONS,
     input: messages.map((message) => ({
       role: message.role,
       content: [
@@ -161,6 +214,7 @@ export function buildOpenAIChatPayload(
       ],
     })),
     max_output_tokens: maxOutputTokens,
+    truncation: "disabled",
   };
 }
 
