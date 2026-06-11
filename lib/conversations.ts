@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import type { AgentChatMessage } from "./chat-agent";
+import { normalizeSummarizerUsage, type SummarizerUsageTotals } from "./history-compression";
 import { normalizeMessageTokenUsage } from "./token-usage";
 
 export type ConversationSummary = {
@@ -11,15 +12,25 @@ export type ConversationSummary = {
   updatedAt: string;
 };
 
-export type ConversationRecord = ConversationSummary & {
-  messages: AgentChatMessage[];
+export type ConversationCompressionState = {
+  summary: string;
+  summaryCoveredCount: number;
+  summarizerUsage: SummarizerUsageTotals;
 };
+
+export type ConversationRecord = ConversationSummary &
+  ConversationCompressionState & {
+    messages: AgentChatMessage[];
+  };
 
 type ConversationRow = {
   id: string;
   title: string;
   messages: unknown;
   message_count: number;
+  summary: string | null;
+  summary_covered_count: number | string | null;
+  summarizer_usage: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -70,6 +81,9 @@ export async function getConversation(userLogin: string, id: string): Promise<Co
       title,
       messages,
       jsonb_array_length(messages) as message_count,
+      summary,
+      summary_covered_count,
+      summarizer_usage,
       created_at,
       updated_at
     from conversations
@@ -97,6 +111,9 @@ export async function createConversation(
       title,
       messages,
       jsonb_array_length(messages) as message_count,
+      summary,
+      summary_covered_count,
+      summarizer_usage,
       created_at,
       updated_at
   `;
@@ -112,22 +129,49 @@ export async function updateConversation(
   userLogin: string,
   id: string,
   messages: AgentChatMessage[],
+  compression?: ConversationCompressionState,
 ): Promise<ConversationRecord | null> {
   await ensureConversationsTable();
 
   const normalizedMessages = normalizeStoredMessages(messages);
-  const [row] = await getSql()<ConversationRow[]>`
-    update conversations
-    set messages = ${getSql().json(normalizedMessages)}, updated_at = now()
-    where user_login = ${userLogin} and id = ${id}
-    returning
-      id,
-      title,
-      messages,
-      jsonb_array_length(messages) as message_count,
-      created_at,
-      updated_at
-  `;
+  // The postgres tagged-template driver does not compose conditional set
+  // clauses, so the compression branch is a separate full query.
+  const [row] = compression
+    ? await getSql()<ConversationRow[]>`
+        update conversations
+        set
+          messages = ${getSql().json(normalizedMessages)},
+          summary = ${compression.summary},
+          summary_covered_count = ${compression.summaryCoveredCount},
+          summarizer_usage = ${getSql().json(compression.summarizerUsage)},
+          updated_at = now()
+        where user_login = ${userLogin} and id = ${id}
+        returning
+          id,
+          title,
+          messages,
+          jsonb_array_length(messages) as message_count,
+          summary,
+          summary_covered_count,
+          summarizer_usage,
+          created_at,
+          updated_at
+      `
+    : await getSql()<ConversationRow[]>`
+        update conversations
+        set messages = ${getSql().json(normalizedMessages)}, updated_at = now()
+        where user_login = ${userLogin} and id = ${id}
+        returning
+          id,
+          title,
+          messages,
+          jsonb_array_length(messages) as message_count,
+          summary,
+          summary_covered_count,
+          summarizer_usage,
+          created_at,
+          updated_at
+      `;
 
   return row ? rowToConversation(row) : null;
 }
@@ -187,6 +231,18 @@ async function ensureConversationsTable() {
         create index if not exists conversations_user_login_updated_at_idx
         on conversations (user_login, updated_at desc)
       `;
+      await getSql()`
+        alter table conversations
+        add column if not exists summary text not null default ''
+      `;
+      await getSql()`
+        alter table conversations
+        add column if not exists summary_covered_count integer not null default 0
+      `;
+      await getSql()`
+        alter table conversations
+        add column if not exists summarizer_usage jsonb not null default '{}'::jsonb
+      `;
     });
   }
 
@@ -221,9 +277,16 @@ function shouldUseSsl(databaseUrl: string) {
 }
 
 function rowToConversation(row: ConversationRow): ConversationRecord {
+  const messages = normalizeStoredMessages(row.messages);
+  const summary = typeof row.summary === "string" ? row.summary : "";
+  const coveredCount = Math.floor(Number(row.summary_covered_count ?? 0));
+
   return {
     ...rowToSummary(row),
-    messages: normalizeStoredMessages(row.messages),
+    messages,
+    summary,
+    summaryCoveredCount: Math.min(Math.max(Number.isFinite(coveredCount) ? coveredCount : 0, 0), messages.length),
+    summarizerUsage: normalizeSummarizerUsage(row.summarizer_usage),
   };
 }
 
