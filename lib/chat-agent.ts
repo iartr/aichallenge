@@ -34,6 +34,10 @@ export type OpenAIChatAgentOptions = {
   maxOutputTokens?: number;
 };
 
+export type OpenAIChatRespondOptions = {
+  instructions?: string;
+};
+
 type OpenAIChatInputMessage = {
   role: AgentChatRole;
   content: Array<
@@ -86,11 +90,12 @@ export class OpenAIChatAgent {
     this.maxOutputTokens = maxOutputTokens;
   }
 
-  async respond(messages: AgentChatMessage[]): Promise<OpenAIChatAgentResult> {
+  async respond(messages: AgentChatMessage[], options?: OpenAIChatRespondOptions): Promise<OpenAIChatAgentResult> {
+    const instructions = options?.instructions?.trim() || CHAT_AGENT_INSTRUCTIONS;
     const normalizedMessages = normalizeAgentMessages(messages);
     const estimate = buildTokenUsageEstimate({
       messages: normalizedMessages,
-      instructions: CHAT_AGENT_INSTRUCTIONS,
+      instructions,
       model: this.model,
       maxOutputTokens: this.maxOutputTokens,
     });
@@ -105,7 +110,7 @@ export class OpenAIChatAgent {
       );
     }
 
-    const payload = buildOpenAIChatPayload(normalizedMessages, this.model, this.maxOutputTokens);
+    const payload = buildOpenAIChatPayload(normalizedMessages, this.model, this.maxOutputTokens, instructions);
 
     const response = await this.fetcher(OPENAI_CHAT_RESPONSES_URL, {
       method: "POST",
@@ -139,7 +144,7 @@ export class OpenAIChatAgent {
       ? applyProviderUsage(estimate, providerUsage, this.model)
       : buildTokenUsageEstimate({
           messages: normalizedMessages,
-          instructions: CHAT_AGENT_INSTRUCTIONS,
+          instructions,
           model: this.model,
           maxOutputTokens: this.maxOutputTokens,
           responseText: answer,
@@ -195,10 +200,11 @@ export function buildOpenAIChatPayload(
   messages: AgentChatMessage[],
   model = DEFAULT_OPENAI_CHAT_MODEL,
   maxOutputTokens = 1200,
+  instructions = CHAT_AGENT_INSTRUCTIONS,
 ): OpenAIChatPayload {
   return {
     model,
-    instructions: CHAT_AGENT_INSTRUCTIONS,
+    instructions,
     input: messages.map((message) => ({
       role: message.role,
       content: [

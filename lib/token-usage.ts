@@ -24,6 +24,7 @@ export type AgentTokenUsage = {
 
 export type AgentMessageTokenUsage = AgentTokenUsage & {
   tokens: number;
+  savedTokens?: number;
 };
 
 export type OpenAIProviderUsage = {
@@ -198,6 +199,7 @@ export function normalizeMessageTokenUsage(value: unknown): AgentMessageTokenUsa
   }
 
   const tokens = readNonNegativeNumber(value.tokens);
+  const savedTokens = readNonNegativeNumber(value.savedTokens);
   const totalTokens = readNonNegativeNumber(value.totalTokens);
   const estimatedCostUsd = readNonNegativeNumber(value.estimatedCostUsd);
   const contextWindowTokens = readNonNegativeNumber(value.contextWindowTokens);
@@ -214,6 +216,7 @@ export function normalizeMessageTokenUsage(value: unknown): AgentMessageTokenUsa
 
   return {
     tokens,
+    ...(savedTokens !== undefined ? { savedTokens } : {}),
     currentRequestTokens: currentRequestTokens ?? 0,
     historyTokens: historyTokens ?? totalTokens,
     responseTokens: responseTokens ?? 0,

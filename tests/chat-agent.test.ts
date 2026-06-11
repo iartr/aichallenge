@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CHAT_AGENT_INSTRUCTIONS,
   DEFAULT_OPENAI_CHAT_MODEL,
   OPENAI_CHAT_RESPONSES_URL,
   OpenAIChatAgent,
@@ -114,6 +115,95 @@ describe("OpenAI chat agent", () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain("openai-key");
+  });
+
+  it("supports custom instructions in the payload and respond options", async () => {
+    const payload = buildOpenAIChatPayload(
+      [
+        {
+          role: "user",
+          content: "Hi.",
+        },
+      ],
+      "gpt-test",
+      900,
+      "Custom system prompt.",
+    );
+
+    expect(payload.instructions).toBe("Custom system prompt.");
+
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ output_text: "Done." }), { status: 200 }));
+    const agent = new OpenAIChatAgent({
+      apiKey: "openai-key",
+      model: "gpt-test",
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+
+    await agent.respond(
+      [
+        {
+          role: "user",
+          content: "Hi.",
+        },
+      ],
+      { instructions: "Custom system prompt with summary." },
+    );
+
+    const [, init] = fetcher.mock.calls[0];
+
+    expect(JSON.parse(String(init?.body)).instructions).toBe("Custom system prompt with summary.");
+  });
+
+  it("falls back to the default instructions when none are passed", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ output_text: "Done." }), { status: 200 }));
+    const agent = new OpenAIChatAgent({
+      apiKey: "openai-key",
+      model: "gpt-test",
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+
+    await agent.respond([
+      {
+        role: "user",
+        content: "Hi.",
+      },
+    ]);
+
+    const [, init] = fetcher.mock.calls[0];
+
+    expect(JSON.parse(String(init?.body)).instructions).toBe(CHAT_AGENT_INSTRUCTIONS);
+  });
+
+  it("counts custom instructions in the preflight context check", async () => {
+    vi.stubEnv("OPENAI_CONTEXT_WINDOW_TOKENS", "40");
+
+    const fetcher = vi.fn();
+    const agent = new OpenAIChatAgent({
+      apiKey: "openai-key",
+      model: "gpt-test",
+      fetcher: fetcher as unknown as typeof fetch,
+      maxOutputTokens: 10,
+    });
+    const longInstructions = `Context summary: ${"facts ".repeat(50)}`;
+
+    await expect(
+      agent.respond(
+        [
+          {
+            role: "user",
+            content: "Hi.",
+          },
+        ],
+        { instructions: longInstructions },
+      ),
+    ).rejects.toMatchObject({
+      status: 413,
+      usage: {
+        failureMode: "preflight_context_overflow",
+      },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 
   it("uses provider token usage when OpenAI returns it", async () => {

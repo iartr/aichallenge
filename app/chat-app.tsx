@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ChatRole = "user" | "assistant";
 
@@ -29,6 +29,8 @@ type ConversationSummary = {
 
 type ConversationRecord = ConversationSummary & {
   messages: StoredChatMessage[];
+  summary?: unknown;
+  summaryCoveredCount?: unknown;
 };
 
 type ApiErrorResponse = {
@@ -58,6 +60,7 @@ type AgentChatResponse = ConversationResponse & {
   answer?: unknown;
   model?: unknown;
   usage?: unknown;
+  compression?: unknown;
 };
 
 type TokenFailureMode = "preflight_context_overflow" | "provider_context_overflow" | "provider_error";
@@ -78,11 +81,31 @@ type TokenUsage = {
 
 type MessageTokenUsage = TokenUsage & {
   tokens: number;
+  savedTokens?: number;
 };
 
 type TokenTimelineRow = {
   turn: number;
-  usage: TokenUsage;
+  usage: MessageTokenUsage;
+};
+
+type CompressionInfo = {
+  enabled: boolean;
+  summary: string;
+  summaryTokens: number;
+  coveredMessageCount: number;
+  sentMessageCount: number;
+  sentHistoryTokens: number;
+  fullHistoryTokens: number;
+  savedTokens: number;
+  savedPercent: number;
+  summarizerTokens: number;
+};
+
+type SummaryInfo = {
+  text: string;
+  coveredCount: number;
+  tokens: number | null;
 };
 
 const EMPTY_STATUS_TEXT = "Ready";
@@ -101,6 +124,9 @@ export function ChatApp() {
   const [statusText, setStatusText] = useState(EMPTY_STATUS_TEXT);
   const [model, setModel] = useState("");
   const [latestUsage, setLatestUsage] = useState<TokenUsage | null>(null);
+  const [compressionEnabled, setCompressionEnabled] = useState(true);
+  const [latestCompression, setLatestCompression] = useState<CompressionInfo | null>(null);
+  const [activeSummary, setActiveSummary] = useState<SummaryInfo | null>(null);
   const runIdRef = useRef(0);
   const chatBodyRef = useRef<HTMLDivElement>(null);
 
@@ -113,10 +139,21 @@ export function ChatApp() {
   const persistedUsage = useMemo(() => readLatestMessageUsage(messages), [messages]);
   const visibleUsage = latestUsage ?? persistedUsage;
   const tokenTimeline = useMemo(() => buildTokenTimeline(messages), [messages]);
-  const comparisonRows = useMemo(() => buildComparisonRows(tokenTimeline, visibleUsage), [tokenTimeline, visibleUsage]);
+  const comparisonRows = useMemo(
+    () => buildComparisonRows(tokenTimeline, visibleUsage, latestCompression),
+    [tokenTimeline, visibleUsage, latestCompression],
+  );
   const contextFill = visibleUsage
     ? clampPercent((visibleUsage.totalTokens / Math.max(visibleUsage.contextWindowTokens, 1)) * 100)
     : 0;
+  const summaryInfo: SummaryInfo | null = latestCompression?.summary
+    ? {
+        text: latestCompression.summary,
+        coveredCount: latestCompression.coveredMessageCount,
+        tokens: latestCompression.summaryTokens,
+      }
+    : activeSummary;
+  const coveredCount = summaryInfo?.coveredCount ?? 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -231,6 +268,8 @@ export function ChatApp() {
     setInput("");
     setModel("");
     setLatestUsage(null);
+    setLatestCompression(null);
+    setActiveSummary(null);
     setStatus("idle");
     setStatusText(EMPTY_STATUS_TEXT);
   }
@@ -272,6 +311,8 @@ export function ChatApp() {
       setActiveConversationId(data.conversation.id);
       setMessages(toChatMessages(data.conversation));
       setLatestUsage(null);
+      setLatestCompression(null);
+      setActiveSummary(readConversationSummary(data.conversation));
       setInput("");
       setStatus("idle");
       setStatusText(EMPTY_STATUS_TEXT);
@@ -311,6 +352,7 @@ export function ChatApp() {
         body: JSON.stringify({
           ...(activeConversationId ? { conversationId: activeConversationId } : {}),
           message: content,
+          compression: compressionEnabled,
         }),
       });
       const data = (await response.json()) as AgentChatResponse;
@@ -341,7 +383,11 @@ export function ChatApp() {
       await typeAssistantAnswer(assistantMessage.id, answer, currentRun);
 
       if (runIdRef.current === currentRun) {
+        // Apply compression state together with the canonical message list,
+        // otherwise the summary divider can briefly split the optimistic turn.
         setMessages(toChatMessages(data.conversation));
+        setLatestCompression(readCompressionInfo(data.compression));
+        setActiveSummary(readConversationSummary(data.conversation));
         setStatus("idle");
         setStatusText(EMPTY_STATUS_TEXT);
       }
@@ -402,6 +448,8 @@ export function ChatApp() {
     setStatusText(EMPTY_STATUS_TEXT);
     setModel("");
     setLatestUsage(null);
+    setLatestCompression(null);
+    setActiveSummary(null);
   }
 
   function upsertConversation(conversation: ConversationRecord) {
@@ -427,7 +475,7 @@ export function ChatApp() {
       <main className="chatShell">
         <section className="loginPanel" aria-label="Admin login">
           <header className="loginHeader">
-            <p className="chatEyebrow">Week2 / Day3</p>
+            <p className="chatEyebrow">Week2 / Day4</p>
             <h1>Persistent Agent</h1>
           </header>
           <form className="loginForm" onSubmit={loginUser}>
@@ -470,7 +518,7 @@ export function ChatApp() {
         <aside className="conversationSidebar" aria-label="Dialog history">
           <div className="sidebarTop">
             <div>
-              <p className="chatEyebrow">Week2 / Day3</p>
+              <p className="chatEyebrow">Week2 / Day4</p>
               <h1>Persistent Agent</h1>
             </div>
             <button className="iconButton" type="button" onClick={startNewChat} title="New chat" aria-label="New chat">
@@ -484,6 +532,7 @@ export function ChatApp() {
                 className={`conversationItem ${conversation.id === activeConversationId ? "active" : ""}`}
                 type="button"
                 key={conversation.id}
+                title={conversation.title}
                 onClick={() => void loadConversation(conversation.id)}
               >
                 <span>{conversation.title}</span>
@@ -503,7 +552,9 @@ export function ChatApp() {
         <section className="conversationPanel" aria-label="Active dialog">
           <header className="chatHeader compactHeader">
             <div>
-              <p className="activeTitle">{activeConversation?.title ?? "New chat"}</p>
+              <p className="activeTitle" title={activeConversation?.title ?? "New chat"}>
+                {activeConversation?.title ?? "New chat"}
+              </p>
               <span>{messages.length ? `${messages.length} messages` : "No messages"}</span>
             </div>
             <div className={`agentStatus ${status}`} role="status" aria-live="polite">
@@ -513,26 +564,35 @@ export function ChatApp() {
           </header>
 
           <section className="tokenPanel" aria-label="Token accounting">
+            <div className="tokenPanelHeader">
+              <span className="tokenPanelTitle">Token usage</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={compressionEnabled}
+                className={`compressionToggle ${compressionEnabled ? "on" : ""}`}
+                onClick={() => setCompressionEnabled((value) => !value)}
+              >
+                <span className="toggleTrack" aria-hidden="true">
+                  <span className="toggleKnob" />
+                </span>
+                Compression {compressionEnabled ? "on" : "off"}
+              </button>
+            </div>
+
             <div className="tokenDashboard">
               <div>
-                <span>Request</span>
-                <strong>{formatTokens(visibleUsage?.currentRequestTokens ?? 0)}</strong>
-              </div>
-              <div>
-                <span>History</span>
+                <span>Prompt</span>
                 <strong>{formatTokens(visibleUsage?.historyTokens ?? 0)}</strong>
+                <small>+{formatTokens(visibleUsage?.currentRequestTokens ?? 0)} new</small>
               </div>
               <div>
                 <span>Response</span>
                 <strong>{formatTokens(visibleUsage?.responseTokens ?? 0)}</strong>
               </div>
-              <div>
+              <div className="primary">
                 <span>Total</span>
                 <strong>{formatTokens(visibleUsage?.totalTokens ?? 0)}</strong>
-              </div>
-              <div>
-                <span>Window</span>
-                <strong>{formatTokens(visibleUsage?.contextWindowTokens ?? 0)}</strong>
               </div>
               <div>
                 <span>Cost</span>
@@ -540,11 +600,43 @@ export function ChatApp() {
               </div>
             </div>
 
-            <div className={`contextMeter ${visibleUsage?.failureMode ? "danger" : ""}`} aria-hidden="true">
-              <span style={{ width: `${contextFill}%` }} />
+            <div className="meterRow">
+              <div className={`contextMeter ${visibleUsage?.failureMode ? "danger" : ""}`} aria-hidden="true">
+                <span style={{ width: `${contextFill}%` }} />
+              </div>
+              <span className="meterLabel">
+                {formatTokens(visibleUsage?.totalTokens ?? 0)} / {formatTokens(visibleUsage?.contextWindowTokens ?? 0)}{" "}
+                window
+              </span>
             </div>
 
-            <div className="tokenTables">
+            {latestCompression?.enabled && latestCompression.coveredMessageCount > 0 ? (
+              <div className="compressionStrip" role="status">
+                <span className="stat">
+                  <span>Full history</span>
+                  <strong>{formatTokens(latestCompression.fullHistoryTokens)}</strong>
+                </span>
+                <span className="stat">
+                  <span>Sent</span>
+                  <strong>{formatTokens(latestCompression.sentHistoryTokens)}</strong>
+                </span>
+                <span className="savedBadge">
+                  Saved {formatTokens(latestCompression.savedTokens)} tok ({latestCompression.savedPercent.toFixed(0)}%)
+                </span>
+                <span className="stat muted">
+                  <span>Summarizer</span>
+                  <strong>+{formatTokens(latestCompression.summarizerTokens)}</strong>
+                </span>
+              </div>
+            ) : latestCompression && !latestCompression.enabled ? (
+              <div className="compressionStrip off" role="status">
+                Compression off — full history sent
+              </div>
+            ) : null}
+
+            <details className="tokenTablesDetails">
+              <summary>Growth &amp; comparison tables</summary>
+              <div className="tokenTables">
               <table>
                 <caption>Growth</caption>
                 <thead>
@@ -553,6 +645,7 @@ export function ChatApp() {
                     <th>History</th>
                     <th>Answer</th>
                     <th>Total</th>
+                    <th>Saved</th>
                     <th>Cost</th>
                   </tr>
                 </thead>
@@ -564,12 +657,13 @@ export function ChatApp() {
                         <td>{formatTokens(row.usage.historyTokens)}</td>
                         <td>{formatTokens(row.usage.responseTokens)}</td>
                         <td>{formatTokens(row.usage.totalTokens)}</td>
+                        <td>{row.usage.savedTokens !== undefined ? formatTokens(row.usage.savedTokens) : "—"}</td>
                         <td>{formatUsd(row.usage.estimatedCostUsd)}</td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={5}>No turns</td>
+                      <td colSpan={6}>No turns</td>
                     </tr>
                   )}
                 </tbody>
@@ -596,25 +690,64 @@ export function ChatApp() {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </details>
+
+            {summaryInfo ? (
+              <details className="summaryDetails">
+                <summary>
+                  Context summary · {summaryInfo.coveredCount} messages
+                  {summaryInfo.tokens !== null ? ` · ${formatTokens(summaryInfo.tokens)} tok` : ""}
+                </summary>
+                <p className="summaryText">{summaryInfo.text}</p>
+              </details>
+            ) : null}
           </section>
 
           <div className="chatBody" aria-live="polite" ref={chatBodyRef}>
             {messages.length ? (
-              messages.map((message) => (
-                <article className={`message ${message.role} ${message.status ?? "done"}`} key={message.id}>
-                  <div className="messageMeta">
-                    <span>{message.role === "user" ? "You" : "Agent"}</span>
-                    {message.usage ? <small>{formatTokens(message.usage.tokens)} tok</small> : null}
-                  </div>
-                  <div className="messageBubble">
-                    {message.content}
-                    {message.status === "streaming" ? <span className="caret" aria-hidden="true" /> : null}
-                  </div>
-                </article>
+              messages.map((message, index) => (
+                <Fragment key={message.id}>
+                  <article
+                    className={`message ${message.role} ${message.status ?? "done"} ${
+                      index < coveredCount ? "inSummary" : ""
+                    }`}
+                  >
+                    <div className="messageMeta">
+                      <span>{message.role === "user" ? "You" : "Agent"}</span>
+                      {message.usage ? <small>{formatTokens(message.usage.tokens)} tok</small> : null}
+                    </div>
+                    <div className="messageBubble">
+                      {message.status === "streaming" && !message.content ? (
+                        <span className="typingDots" aria-hidden="true">
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                      ) : (
+                        message.content
+                      )}
+                      {message.status === "streaming" && message.content ? (
+                        <span className="caret" aria-hidden="true" />
+                      ) : null}
+                    </div>
+                  </article>
+                  {coveredCount > 0 && index === coveredCount - 1 && coveredCount < messages.length ? (
+                    <div
+                      className="compressionDivider"
+                      role="separator"
+                      aria-label={`${coveredCount} earlier messages compressed into summary`}
+                    >
+                      <span>{coveredCount} messages above folded into summary</span>
+                    </div>
+                  ) : null}
+                </Fragment>
               ))
             ) : (
-              <div className="emptyDialog">Start a dialog</div>
+              <div className="emptyDialog">
+                <strong>No messages yet</strong>
+                <span>Type below and press Enter to send. Older turns get compressed into a summary automatically.</span>
+              </div>
             )}
           </div>
 
@@ -705,7 +838,7 @@ function buildTokenTimeline(messages: ChatMessage[]): TokenTimelineRow[] {
   return rows.slice(-6);
 }
 
-function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | null) {
+function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | null, compression: CompressionInfo | null) {
   const shortDialog = timeline[0]?.usage ?? null;
   const longDialog = timeline.length > 1 ? timeline[timeline.length - 1]?.usage ?? null : null;
   const contextWindowTokens = usage?.contextWindowTokens ?? longDialog?.contextWindowTokens ?? shortDialog?.contextWindowTokens ?? 0;
@@ -724,12 +857,80 @@ function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | n
       behavior: longDialog ? "Costs more" : "Needs turns",
     },
     {
+      dialog: "Compressed",
+      tokens: compression?.enabled ? formatTokens(compression.sentHistoryTokens) : "-",
+      cost: "-",
+      behavior:
+        compression?.enabled && compression.savedTokens > 0
+          ? `Saves ${compression.savedPercent.toFixed(0)}%`
+          : compression && !compression.enabled
+            ? "Off"
+            : "Pending",
+    },
+    {
       dialog: "Overflow",
       tokens: contextWindowTokens ? `>${formatTokens(contextWindowTokens)}` : "window + 1",
       cost: "-",
       behavior: usage?.failureMode ? "Blocked" : "413 guard",
     },
   ];
+}
+
+function readCompressionInfo(value: unknown): CompressionInfo | null {
+  if (!isRecord(value) || typeof value.enabled !== "boolean") {
+    return null;
+  }
+
+  const summaryTokens = readNumber(value.summaryTokens);
+  const coveredMessageCount = readNumber(value.coveredMessageCount);
+  const sentMessageCount = readNumber(value.sentMessageCount);
+  const sentHistoryTokens = readNumber(value.sentHistoryTokens);
+  const fullHistoryTokens = readNumber(value.fullHistoryTokens);
+  const savedTokens = readNumber(value.savedTokens);
+  const savedPercent = readNumber(value.savedPercent);
+
+  if (
+    sentHistoryTokens === undefined ||
+    fullHistoryTokens === undefined ||
+    savedTokens === undefined ||
+    savedPercent === undefined
+  ) {
+    return null;
+  }
+
+  const summarizerTotal = isRecord(value.summarizer) ? readNumber(value.summarizer.totalTokens) : undefined;
+
+  return {
+    enabled: value.enabled,
+    summary: typeof value.summary === "string" ? value.summary : "",
+    summaryTokens: summaryTokens ?? 0,
+    coveredMessageCount: coveredMessageCount ?? 0,
+    sentMessageCount: sentMessageCount ?? 0,
+    sentHistoryTokens,
+    fullHistoryTokens,
+    savedTokens,
+    savedPercent,
+    summarizerTokens: summarizerTotal ?? 0,
+  };
+}
+
+function readConversationSummary(conversation: unknown): SummaryInfo | null {
+  if (!isRecord(conversation)) {
+    return null;
+  }
+
+  const text = typeof conversation.summary === "string" ? conversation.summary.trim() : "";
+  const coveredCount = readNumber(conversation.summaryCoveredCount ?? conversation.summary_covered_count);
+
+  if (!text || !coveredCount) {
+    return null;
+  }
+
+  return {
+    text,
+    coveredCount,
+    tokens: null,
+  };
 }
 
 function readMessageTokenUsage(value: unknown): MessageTokenUsage | undefined {
@@ -744,9 +945,12 @@ function readMessageTokenUsage(value: unknown): MessageTokenUsage | undefined {
     return undefined;
   }
 
+  const savedTokens = readNumber(value.savedTokens);
+
   return {
     ...usage,
     tokens,
+    ...(savedTokens !== undefined ? { savedTokens } : {}),
   };
 }
 
@@ -809,11 +1013,19 @@ function formatTokens(value: number) {
 }
 
 function formatUsd(value: number) {
-  if (value > 0 && value < 0.000001) {
-    return "<$0.000001";
+  if (value === 0) {
+    return "$0.00";
   }
 
-  return `$${value.toFixed(6)}`;
+  if (value < 0.0001) {
+    return "<$0.0001";
+  }
+
+  if (value < 0.01) {
+    return `$${value.toFixed(4)}`;
+  }
+
+  return `$${value.toFixed(2)}`;
 }
 
 function clampPercent(value: number) {

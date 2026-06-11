@@ -1,12 +1,25 @@
 import { NextResponse } from "next/server";
 import { AuthConfigError, requireAuthenticatedUser } from "@/lib/auth";
-import { ChatAgentError, OpenAIChatAgent, normalizeAgentMessages } from "@/lib/chat-agent";
+import {
+  CHAT_AGENT_INSTRUCTIONS,
+  ChatAgentError,
+  OpenAIChatAgent,
+  normalizeAgentMessages,
+} from "@/lib/chat-agent";
 import {
   ConversationStoreError,
   createConversation,
   getConversation,
   updateConversation,
 } from "@/lib/conversations";
+import {
+  addSummarizerUsage,
+  buildCompressionReport,
+  compressHistory,
+  emptySummarizerUsageTotals,
+  summarizeMessages,
+  type CompressionStepResult,
+} from "@/lib/history-compression";
 import { buildMessageTokenUsage, type AgentTokenUsage } from "@/lib/token-usage";
 
 export const runtime = "nodejs";
@@ -31,7 +44,7 @@ export async function POST(request: Request) {
 
   try {
     const user = requireAuthenticatedUser(request);
-    const { conversationId, message } = readChatRequest(body);
+    const { conversationId, message, compression } = readChatRequest(body);
     const conversation = conversationId ? await getConversation(user.login, conversationId) : null;
 
     if (conversationId && !conversation) {
@@ -45,11 +58,41 @@ export async function POST(request: Request) {
         content: message,
       },
     ]);
+    const apiKey = process.env.OPENAI_API_KEY ?? "";
+    const state = {
+      summary: conversation?.summary ?? "",
+      summaryCoveredCount: conversation?.summaryCoveredCount ?? 0,
+    };
+    const summarizerTotals = conversation?.summarizerUsage ?? emptySummarizerUsageTotals();
+    const step: CompressionStepResult = compression
+      ? await compressHistory(messages, state, ({ previousSummary, messages: messagesToFold }) =>
+          summarizeMessages({ apiKey, previousSummary, messages: messagesToFold }),
+        )
+      : {
+          state,
+          sentMessages: messages,
+          instructions: CHAT_AGENT_INSTRUCTIONS,
+          summarizerUsage: null,
+          summarizerError: null,
+        };
     const agent = new OpenAIChatAgent({
-      apiKey: process.env.OPENAI_API_KEY ?? "",
+      apiKey,
       model: process.env.OPENAI_CHAT_MODEL,
     });
-    const result = await agent.respond(messages);
+    const result = await agent.respond(step.sentMessages, { instructions: step.instructions });
+    const newSummarizerTotals = step.summarizerUsage
+      ? addSummarizerUsage(summarizerTotals, step.summarizerUsage)
+      : summarizerTotals;
+    const compressionReport = buildCompressionReport({
+      enabled: compression,
+      allMessages: messages,
+      sentMessages: step.sentMessages,
+      instructions: step.instructions,
+      state: step.state,
+      summarizerUsage: step.summarizerUsage,
+      summarizerTotals: newSummarizerTotals,
+      summarizerError: step.summarizerError,
+    });
     const latestUserMessage = messages[messages.length - 1] ?? {
       role: "user" as const,
       content: message,
@@ -63,11 +106,25 @@ export async function POST(request: Request) {
       {
         role: "assistant" as const,
         content: result.answer,
-        usage: buildMessageTokenUsage(result.usage, result.usage.responseTokens),
+        usage: {
+          ...buildMessageTokenUsage(result.usage, result.usage.responseTokens),
+          ...(compression ? { savedTokens: compressionReport.savedTokens } : {}),
+        },
       },
     ];
     const savedConversation = conversation
-      ? await updateConversation(user.login, conversation.id, savedMessages)
+      ? await updateConversation(
+          user.login,
+          conversation.id,
+          savedMessages,
+          compression && step.summarizerUsage
+            ? {
+                summary: step.state.summary,
+                summaryCoveredCount: step.state.summaryCoveredCount,
+                summarizerUsage: newSummarizerTotals,
+              }
+            : undefined,
+        )
       : await createConversation(user.login, savedMessages);
 
     if (!savedConversation) {
@@ -77,6 +134,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...result,
       conversation: savedConversation,
+      compression: compressionReport,
     });
   } catch (error) {
     const status =
@@ -109,9 +167,14 @@ function readChatRequest(body: unknown) {
     throw new ChatAgentError("conversationId must be a string.");
   }
 
+  if (body.compression !== undefined && body.compression !== null && typeof body.compression !== "boolean") {
+    throw new ChatAgentError("compression must be a boolean.");
+  }
+
   return {
     conversationId: typeof body.conversationId === "string" && body.conversationId.trim() ? body.conversationId.trim() : null,
     message,
+    compression: body.compression ?? true,
   };
 }
 

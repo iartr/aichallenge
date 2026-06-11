@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "compare:compression": "tsx scripts/compare-compression.ts"
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21",
@@ -25,6 +26,7 @@
     "@types/react-dom": "latest",
     "eslint": "latest",
     "eslint-plugin-react-hooks": "latest",
+    "tsx": "^4.22.4",
     "typescript": "latest",
     "typescript-eslint": "latest",
     "vitest": "latest"

@@ -441,12 +441,74 @@ textarea {
   gap: 10px;
   border-bottom: 1px solid var(--line);
   background: #ffffff;
-  padding: 12px 16px;
+  padding: 12px 20px;
+}
+
+.tokenPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tokenPanelTitle {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.compressionToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.compressionToggle.on {
+  color: var(--accent-strong);
+}
+
+.toggleTrack {
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #eef1f4;
+  padding: 1px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.compressionToggle.on .toggleTrack {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.toggleKnob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(18, 20, 22, 0.25);
+  transition: transform 140ms ease;
+}
+
+.compressionToggle.on .toggleKnob {
+  transform: translateX(16px);
 }
 
 .tokenDashboard {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -457,6 +519,21 @@ textarea {
   border-left: 3px solid color-mix(in srgb, var(--accent), white 40%);
   background: #f8fafb;
   padding: 8px 10px;
+}
+
+.tokenDashboard div.primary {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), white 92%);
+}
+
+.tokenDashboard div.primary strong {
+  font-size: 18px;
+}
+
+.tokenDashboard small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
 }
 
 .tokenDashboard span,
@@ -478,6 +555,102 @@ textarea {
   white-space: nowrap;
 }
 
+.meterRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meterRow .contextMeter {
+  flex: 1;
+}
+
+.meterLabel {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.compressionStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent), white 55%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent), white 95%);
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+.compressionStrip.off {
+  border-color: var(--line);
+  background: #f8fafb;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.compressionStrip .stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.compressionStrip .stat > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.compressionStrip .stat strong {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.compressionStrip .stat.muted strong {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.savedBadge {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent), white 85%);
+  padding: 2px 10px;
+  color: var(--accent-strong);
+  font-weight: 850;
+}
+
+.summaryDetails {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+  padding: 8px 12px;
+}
+
+.summaryDetails summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.summaryDetails summary:hover {
+  color: var(--accent-strong);
+}
+
+.summaryText {
+  max-height: 150px;
+  overflow-y: auto;
+  margin: 8px 0 2px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .contextMeter {
   height: 7px;
   overflow: hidden;
@@ -494,6 +667,22 @@ textarea {
 
 .contextMeter.danger span {
   background: var(--danger);
+}
+
+.tokenTablesDetails summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.tokenTablesDetails summary:hover {
+  color: var(--accent-strong);
+}
+
+.tokenTablesDetails[open] summary {
+  margin-bottom: 8px;
 }
 
 .tokenTables {
@@ -545,10 +734,49 @@ textarea {
 }
 
 .emptyDialog {
+  display: grid;
+  gap: 6px;
+  max-width: 320px;
   margin: auto;
-  color: var(--muted);
+  text-align: center;
+}
+
+.emptyDialog strong {
+  color: var(--text);
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 850;
+}
+
+.emptyDialog span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.compressionDivider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(760px, 100%);
+  align-self: center;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.compressionDivider::before,
+.compressionDivider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent), white 60%);
+}
+
+.message.inSummary {
+  opacity: 0.72;
 }
 
 .message {
@@ -619,12 +847,34 @@ textarea {
   animation: blink 760ms steps(2, start) infinite;
 }
 
+.typingDots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.typingDots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: dotPulse 900ms ease-in-out infinite;
+}
+
+.typingDots i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.typingDots i:nth-child(3) {
+  animation-delay: 300ms;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
-  padding: 16px;
+  padding: 16px 20px;
   border-top: 1px solid var(--line);
   background: #ffffff;
 }
@@ -705,6 +955,19 @@ textarea {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes dotPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
   }
 }
 
@@ -805,6 +1068,17 @@ pre {
   word-break: break-word;
 }
 
+.sendButton:focus-visible,
+.secondaryButton:focus-visible,
+.iconButton:focus-visible,
+.conversationItem:focus-visible,
+.compressionToggle:focus-visible,
+.summaryDetails summary:focus-visible,
+.tokenTablesDetails summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (max-width: 1100px) {
   .workspace,
   .panes {
@@ -824,7 +1098,7 @@ pre {
   }
 
   .tokenDashboard {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .tokenTables {
@@ -907,6 +1181,14 @@ pre {
 
   .tokenDashboard {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .compressionStrip {
+    gap: 8px;
+  }
+
+  .meterLabel {
+    display: none;
   }
 
   .chatBody {
