@@ -31,6 +31,9 @@ type ConversationRecord = ConversationSummary & {
   messages: StoredChatMessage[];
   summary?: unknown;
   summaryCoveredCount?: unknown;
+  contextStrategy?: unknown;
+  facts?: unknown;
+  branches?: unknown;
 };
 
 type ApiErrorResponse = {
@@ -61,7 +64,48 @@ type AgentChatResponse = ConversationResponse & {
   model?: unknown;
   usage?: unknown;
   compression?: unknown;
+  strategy?: unknown;
 };
+
+type ContextStrategy = "full" | "sliding_window" | "facts" | "branching" | "summary";
+
+type FactEntry = {
+  key: string;
+  value: string;
+};
+
+type BranchInfo = {
+  id: string;
+  name: string;
+  messageCount: number;
+};
+
+type StrategyReport = {
+  strategy: ContextStrategy;
+  enabled: boolean;
+  windowSize: number;
+  sentMessageCount: number;
+  droppedMessageCount: number;
+  sentHistoryTokens: number;
+  fullHistoryTokens: number;
+  savedTokens: number;
+  savedPercent: number;
+  extraTokens: number;
+  factsTokens: number;
+  facts: FactEntry[];
+  branch: { activeId: string; activeName: string; count: number } | null;
+  error: string | null;
+};
+
+const STRATEGY_OPTIONS: { value: ContextStrategy; label: string }[] = [
+  { value: "full", label: "Full history" },
+  { value: "sliding_window", label: "Sliding window" },
+  { value: "facts", label: "Sticky facts" },
+  { value: "branching", label: "Branching" },
+  { value: "summary", label: "Summary (day4)" },
+];
+
+const DEFAULT_WINDOW_SIZE = 6;
 
 type TokenFailureMode = "preflight_context_overflow" | "provider_context_overflow" | "provider_error";
 
@@ -124,7 +168,12 @@ export function ChatApp() {
   const [statusText, setStatusText] = useState(EMPTY_STATUS_TEXT);
   const [model, setModel] = useState("");
   const [latestUsage, setLatestUsage] = useState<TokenUsage | null>(null);
-  const [compressionEnabled, setCompressionEnabled] = useState(true);
+  const [strategy, setStrategy] = useState<ContextStrategy>("full");
+  const [windowSize, setWindowSize] = useState(DEFAULT_WINDOW_SIZE);
+  const [latestStrategyReport, setLatestStrategyReport] = useState<StrategyReport | null>(null);
+  const [facts, setFacts] = useState<FactEntry[]>([]);
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [latestCompression, setLatestCompression] = useState<CompressionInfo | null>(null);
   const [activeSummary, setActiveSummary] = useState<SummaryInfo | null>(null);
   const runIdRef = useRef(0);
@@ -140,8 +189,8 @@ export function ChatApp() {
   const visibleUsage = latestUsage ?? persistedUsage;
   const tokenTimeline = useMemo(() => buildTokenTimeline(messages), [messages]);
   const comparisonRows = useMemo(
-    () => buildComparisonRows(tokenTimeline, visibleUsage, latestCompression),
-    [tokenTimeline, visibleUsage, latestCompression],
+    () => buildComparisonRows(tokenTimeline, visibleUsage, latestCompression, latestStrategyReport),
+    [tokenTimeline, visibleUsage, latestCompression, latestStrategyReport],
   );
   const contextFill = visibleUsage
     ? clampPercent((visibleUsage.totalTokens / Math.max(visibleUsage.contextWindowTokens, 1)) * 100)
@@ -153,7 +202,7 @@ export function ChatApp() {
         tokens: latestCompression.summaryTokens,
       }
     : activeSummary;
-  const coveredCount = summaryInfo?.coveredCount ?? 0;
+  const coveredCount = strategy === "summary" ? (summaryInfo?.coveredCount ?? 0) : 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -270,6 +319,11 @@ export function ChatApp() {
     setLatestUsage(null);
     setLatestCompression(null);
     setActiveSummary(null);
+    setStrategy("full");
+    setLatestStrategyReport(null);
+    setFacts([]);
+    setBranches([]);
+    setActiveBranchId(null);
     setStatus("idle");
     setStatusText(EMPTY_STATUS_TEXT);
   }
@@ -313,6 +367,10 @@ export function ChatApp() {
       setLatestUsage(null);
       setLatestCompression(null);
       setActiveSummary(readConversationSummary(data.conversation));
+      setStrategy(readStrategy(data.conversation) ?? "full");
+      setLatestStrategyReport(null);
+      setFacts(readFacts(data.conversation));
+      hydrateBranches(data.conversation, null);
       setInput("");
       setStatus("idle");
       setStatusText(EMPTY_STATUS_TEXT);
@@ -352,7 +410,10 @@ export function ChatApp() {
         body: JSON.stringify({
           ...(activeConversationId ? { conversationId: activeConversationId } : {}),
           message: content,
-          compression: compressionEnabled,
+          strategy,
+          windowSize,
+          // Back-compat for the day4 summary path the server still honors.
+          compression: strategy === "summary",
         }),
       });
       const data = (await response.json()) as AgentChatResponse;
@@ -383,11 +444,15 @@ export function ChatApp() {
       await typeAssistantAnswer(assistantMessage.id, answer, currentRun);
 
       if (runIdRef.current === currentRun) {
-        // Apply compression state together with the canonical message list,
-        // otherwise the summary divider can briefly split the optimistic turn.
+        // Apply strategy/compression state together with the canonical message
+        // list, otherwise the summary divider can briefly split the optimistic turn.
         setMessages(toChatMessages(data.conversation));
         setLatestCompression(readCompressionInfo(data.compression));
         setActiveSummary(readConversationSummary(data.conversation));
+        const report = readStrategyReport(data.strategy);
+        setLatestStrategyReport(report);
+        setFacts(report?.facts.length ? report.facts : readFacts(data.conversation));
+        hydrateBranches(data.conversation, report);
         setStatus("idle");
         setStatusText(EMPTY_STATUS_TEXT);
       }
@@ -450,6 +515,11 @@ export function ChatApp() {
     setLatestUsage(null);
     setLatestCompression(null);
     setActiveSummary(null);
+    // Keep the chosen strategy/windowSize so a new chat inherits the current mode.
+    setLatestStrategyReport(null);
+    setFacts([]);
+    setBranches([]);
+    setActiveBranchId(null);
   }
 
   function upsertConversation(conversation: ConversationRecord) {
@@ -459,6 +529,64 @@ export function ChatApp() {
       summary,
       ...currentConversations.filter((currentConversation) => currentConversation.id !== summary.id),
     ]);
+  }
+
+  function hydrateBranches(conversation: ConversationRecord, report: StrategyReport | null) {
+    const { branches: nextBranches, activeBranchId: nextActive } = readBranches(conversation);
+    setBranches(nextBranches);
+    setActiveBranchId(report?.branch?.activeId ?? nextActive);
+  }
+
+  async function callBranch(action: "set_checkpoint" | "fork" | "switch", extra?: Record<string, unknown>) {
+    if (!activeConversationId) {
+      return;
+    }
+
+    runIdRef.current += 1; // cancel any in-flight typing so a stale answer can't overwrite the switch
+    setStatus("loading");
+    setStatusText(action === "switch" ? "Switching" : action === "fork" ? "Forking" : "Checkpoint");
+
+    try {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(activeConversationId)}/branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...extra }),
+      });
+      const data = (await response.json()) as ConversationResponse;
+
+      if (!response.ok || !data.conversation) {
+        throw new Error(readErrorMessage(data, response.status));
+      }
+
+      setMessages(toChatMessages(data.conversation));
+      upsertConversation(data.conversation);
+      setActiveConversationId(data.conversation.id);
+      setFacts(readFacts(data.conversation));
+      hydrateBranches(data.conversation, null);
+      setLatestStrategyReport(null);
+      setLatestUsage(null);
+      setStatus("idle");
+      setStatusText(EMPTY_STATUS_TEXT);
+    } catch (error) {
+      setStatus("error");
+      setStatusText(error instanceof Error ? error.message : "Branch action failed");
+    }
+  }
+
+  function checkpointBranch() {
+    void callBranch("set_checkpoint", { index: messages.length });
+  }
+
+  function createBranch() {
+    void callBranch("fork");
+  }
+
+  function selectBranch(branchId: string) {
+    if (branchId === activeBranchId) {
+      return;
+    }
+
+    void callBranch("switch", { branchId });
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -518,7 +646,7 @@ export function ChatApp() {
         <aside className="conversationSidebar" aria-label="Dialog history">
           <div className="sidebarTop">
             <div>
-              <p className="chatEyebrow">Week2 / Day4</p>
+              <p className="chatEyebrow">Week2 / Day5</p>
               <h1>Persistent Agent</h1>
             </div>
             <button className="iconButton" type="button" onClick={startNewChat} title="New chat" aria-label="New chat">
@@ -566,19 +694,83 @@ export function ChatApp() {
           <section className="tokenPanel" aria-label="Token accounting">
             <div className="tokenPanelHeader">
               <span className="tokenPanelTitle">Token usage</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={compressionEnabled}
-                className={`compressionToggle ${compressionEnabled ? "on" : ""}`}
-                onClick={() => setCompressionEnabled((value) => !value)}
-              >
-                <span className="toggleTrack" aria-hidden="true">
-                  <span className="toggleKnob" />
-                </span>
-                Compression {compressionEnabled ? "on" : "off"}
-              </button>
+              <label className="strategyField">
+                <span className="srOnly">Context strategy</span>
+                <select
+                  className="strategySelect"
+                  value={strategy}
+                  onChange={(event) => setStrategy(event.target.value as ContextStrategy)}
+                >
+                  {STRATEGY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
+
+            {strategy === "sliding_window" || strategy === "facts" ? (
+              <div className="strategyControls">
+                <label className="field compact">
+                  <span>Last N messages</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={windowSize}
+                    onChange={(event) => setWindowSize(clampWindow(Number(event.target.value)))}
+                  />
+                </label>
+                <p className="strategyHint">
+                  {strategy === "facts"
+                    ? "Sends the facts block plus the last N messages."
+                    : "Sends only the last N messages; older turns are dropped."}
+                </p>
+              </div>
+            ) : null}
+
+            {strategy === "branching" ? (
+              <div className="strategyControls">
+                <div className="branchBar" role="group" aria-label="Branches">
+                  <div className="branchPills">
+                    {branches.length ? (
+                      branches.map((branch) => (
+                        <button
+                          key={branch.id}
+                          type="button"
+                          className={`branchPill ${branch.id === activeBranchId ? "active" : ""}`}
+                          onClick={() => selectBranch(branch.id)}
+                          title={`${branch.name} · ${branch.messageCount} msgs`}
+                        >
+                          {branch.name}
+                        </button>
+                      ))
+                    ) : (
+                      <span className="branchEmpty">No branches yet — send a message, then checkpoint</span>
+                    )}
+                  </div>
+                  <div className="branchActions">
+                    <button
+                      type="button"
+                      className="secondaryButton compact"
+                      onClick={checkpointBranch}
+                      disabled={!activeConversationId}
+                    >
+                      Checkpoint
+                    </button>
+                    <button
+                      type="button"
+                      className="secondaryButton compact"
+                      onClick={createBranch}
+                      disabled={!activeConversationId}
+                    >
+                      New branch
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div className="tokenDashboard">
               <div>
@@ -610,27 +802,59 @@ export function ChatApp() {
               </span>
             </div>
 
-            {latestCompression?.enabled && latestCompression.coveredMessageCount > 0 ? (
-              <div className="compressionStrip" role="status">
+            {strategy === "summary" ? (
+              latestCompression?.enabled && latestCompression.coveredMessageCount > 0 ? (
+                <div className="compressionStrip" role="status">
+                  <span className="stat">
+                    <span>Full history</span>
+                    <strong>{formatTokens(latestCompression.fullHistoryTokens)}</strong>
+                  </span>
+                  <span className="stat">
+                    <span>Sent</span>
+                    <strong>{formatTokens(latestCompression.sentHistoryTokens)}</strong>
+                  </span>
+                  <span className="savedBadge">
+                    Saved {formatTokens(latestCompression.savedTokens)} tok ({latestCompression.savedPercent.toFixed(0)}%)
+                  </span>
+                  <span className="stat muted">
+                    <span>Summarizer</span>
+                    <strong>+{formatTokens(latestCompression.summarizerTokens)}</strong>
+                  </span>
+                </div>
+              ) : null
+            ) : latestStrategyReport && latestStrategyReport.fullHistoryTokens > 0 ? (
+              <div className="compressionStrip strategyStrip" role="status">
                 <span className="stat">
                   <span>Full history</span>
-                  <strong>{formatTokens(latestCompression.fullHistoryTokens)}</strong>
+                  <strong>{formatTokens(latestStrategyReport.fullHistoryTokens)}</strong>
                 </span>
                 <span className="stat">
                   <span>Sent</span>
-                  <strong>{formatTokens(latestCompression.sentHistoryTokens)}</strong>
+                  <strong>{formatTokens(latestStrategyReport.sentHistoryTokens)}</strong>
                 </span>
-                <span className="savedBadge">
-                  Saved {formatTokens(latestCompression.savedTokens)} tok ({latestCompression.savedPercent.toFixed(0)}%)
-                </span>
-                <span className="stat muted">
-                  <span>Summarizer</span>
-                  <strong>+{formatTokens(latestCompression.summarizerTokens)}</strong>
-                </span>
-              </div>
-            ) : latestCompression && !latestCompression.enabled ? (
-              <div className="compressionStrip off" role="status">
-                Compression off — full history sent
+                {latestStrategyReport.savedTokens > 0 ? (
+                  <span className="savedBadge">
+                    Saved {formatTokens(latestStrategyReport.savedTokens)} tok (
+                    {latestStrategyReport.savedPercent.toFixed(0)}%)
+                  </span>
+                ) : (
+                  <span className="stat muted">
+                    <span>Mode</span>
+                    <strong>full send</strong>
+                  </span>
+                )}
+                {latestStrategyReport.droppedMessageCount > 0 ? (
+                  <span className="stat muted">
+                    <span>Dropped</span>
+                    <strong>{latestStrategyReport.droppedMessageCount} msgs</strong>
+                  </span>
+                ) : null}
+                {latestStrategyReport.extraTokens > 0 ? (
+                  <span className="stat muted">
+                    <span>Facts block</span>
+                    <strong>+{formatTokens(latestStrategyReport.extraTokens)}</strong>
+                  </span>
+                ) : null}
               </div>
             ) : null}
 
@@ -693,7 +917,21 @@ export function ChatApp() {
               </div>
             </details>
 
-            {summaryInfo ? (
+            {strategy === "facts" && facts.length ? (
+              <details className="summaryDetails factsDetails" open>
+                <summary>Sticky facts · {facts.length} keys</summary>
+                <dl className="factsList">
+                  {facts.map((fact) => (
+                    <div className="factRow" key={fact.key}>
+                      <dt>{fact.key}</dt>
+                      <dd>{fact.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+            ) : null}
+
+            {strategy === "summary" && summaryInfo ? (
               <details className="summaryDetails">
                 <summary>
                   Context summary · {summaryInfo.coveredCount} messages
@@ -746,7 +984,7 @@ export function ChatApp() {
             ) : (
               <div className="emptyDialog">
                 <strong>No messages yet</strong>
-                <span>Type below and press Enter to send. Older turns get compressed into a summary automatically.</span>
+                <span>Type below and press Enter to send. Pick a context strategy above to control what history the agent sees.</span>
               </div>
             )}
           </div>
@@ -838,7 +1076,12 @@ function buildTokenTimeline(messages: ChatMessage[]): TokenTimelineRow[] {
   return rows.slice(-6);
 }
 
-function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | null, compression: CompressionInfo | null) {
+function buildComparisonRows(
+  timeline: TokenTimelineRow[],
+  usage: TokenUsage | null,
+  compression: CompressionInfo | null,
+  report: StrategyReport | null,
+) {
   const shortDialog = timeline[0]?.usage ?? null;
   const longDialog = timeline.length > 1 ? timeline[timeline.length - 1]?.usage ?? null : null;
   const contextWindowTokens = usage?.contextWindowTokens ?? longDialog?.contextWindowTokens ?? shortDialog?.contextWindowTokens ?? 0;
@@ -857,15 +1100,10 @@ function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | n
       behavior: longDialog ? "Costs more" : "Needs turns",
     },
     {
-      dialog: "Compressed",
-      tokens: compression?.enabled ? formatTokens(compression.sentHistoryTokens) : "-",
+      dialog: report ? strategyLabel(report.strategy) : "Strategy",
+      tokens: report ? formatTokens(report.sentHistoryTokens) : "-",
       cost: "-",
-      behavior:
-        compression?.enabled && compression.savedTokens > 0
-          ? `Saves ${compression.savedPercent.toFixed(0)}%`
-          : compression && !compression.enabled
-            ? "Off"
-            : "Pending",
+      behavior: report ? strategyBehavior(report) : "Pending",
     },
     {
       dialog: "Overflow",
@@ -874,6 +1112,139 @@ function buildComparisonRows(timeline: TokenTimelineRow[], usage: TokenUsage | n
       behavior: usage?.failureMode ? "Blocked" : "413 guard",
     },
   ];
+}
+
+function strategyBehavior(report: StrategyReport): string {
+  if (report.savedTokens > 0) {
+    return `Saves ${report.savedPercent.toFixed(0)}%`;
+  }
+
+  if (report.droppedMessageCount > 0) {
+    return `Drops ${report.droppedMessageCount}`;
+  }
+
+  if (report.extraTokens > 0) {
+    return `+${formatTokens(report.extraTokens)} facts`;
+  }
+
+  return "Full send";
+}
+
+const CONTEXT_STRATEGY_VALUES: ContextStrategy[] = ["full", "sliding_window", "facts", "branching", "summary"];
+
+function readStrategy(conversation: unknown): ContextStrategy | null {
+  if (!isRecord(conversation)) {
+    return null;
+  }
+
+  const value = conversation.contextStrategy;
+
+  return typeof value === "string" && (CONTEXT_STRATEGY_VALUES as string[]).includes(value)
+    ? (value as ContextStrategy)
+    : null;
+}
+
+function readFacts(value: unknown): FactEntry[] {
+  const source = isRecord(value) ? value.facts : value;
+  const items = Array.isArray(source)
+    ? source
+    : isRecord(source) && Array.isArray(source.items)
+      ? source.items
+      : [];
+  const facts: FactEntry[] = [];
+
+  for (const entry of items) {
+    if (isRecord(entry) && typeof entry.key === "string" && typeof entry.value === "string" && entry.value.trim()) {
+      facts.push({ key: entry.key, value: entry.value });
+    }
+  }
+
+  return facts;
+}
+
+function readBranches(conversation: unknown): { branches: BranchInfo[]; activeBranchId: string | null } {
+  if (!isRecord(conversation) || !isRecord(conversation.branches)) {
+    return { branches: [], activeBranchId: null };
+  }
+
+  const state = conversation.branches;
+  const list = Array.isArray(state.list) ? state.list : [];
+  const branches: BranchInfo[] = [];
+
+  for (const entry of list) {
+    if (isRecord(entry) && typeof entry.id === "string") {
+      branches.push({
+        id: entry.id,
+        name: typeof entry.name === "string" && entry.name ? entry.name : entry.id,
+        messageCount: Array.isArray(entry.messages) ? entry.messages.length : 0,
+      });
+    }
+  }
+
+  return {
+    branches,
+    activeBranchId: typeof state.activeBranchId === "string" ? state.activeBranchId : null,
+  };
+}
+
+function readStrategyReport(value: unknown): StrategyReport | null {
+  if (!isRecord(value) || typeof value.strategy !== "string") {
+    return null;
+  }
+
+  const sentHistoryTokens = readNumber(value.sentHistoryTokens);
+  const fullHistoryTokens = readNumber(value.fullHistoryTokens);
+  const savedTokens = readNumber(value.savedTokens);
+  const savedPercent = readNumber(value.savedPercent);
+
+  if (
+    sentHistoryTokens === undefined ||
+    fullHistoryTokens === undefined ||
+    savedTokens === undefined ||
+    savedPercent === undefined
+  ) {
+    return null;
+  }
+
+  const branchValue = isRecord(value.branch) ? value.branch : null;
+
+  return {
+    strategy: (CONTEXT_STRATEGY_VALUES as string[]).includes(value.strategy)
+      ? (value.strategy as ContextStrategy)
+      : "full",
+    enabled: value.enabled === true,
+    windowSize: readNumber(value.windowSize) ?? DEFAULT_WINDOW_SIZE,
+    sentMessageCount: readNumber(value.sentMessageCount) ?? 0,
+    droppedMessageCount: readNumber(value.droppedMessageCount) ?? 0,
+    sentHistoryTokens,
+    fullHistoryTokens,
+    savedTokens,
+    savedPercent,
+    extraTokens: readNumber(value.extraTokens) ?? 0,
+    factsTokens: readNumber(value.factsTokens) ?? 0,
+    facts: readFacts(value.facts),
+    branch:
+      branchValue && typeof branchValue.activeId === "string"
+        ? {
+            activeId: branchValue.activeId,
+            activeName: typeof branchValue.activeName === "string" ? branchValue.activeName : branchValue.activeId,
+            count: readNumber(branchValue.count) ?? 0,
+          }
+        : null,
+    error: typeof value.error === "string" ? value.error : null,
+  };
+}
+
+function clampWindow(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_WINDOW_SIZE;
+  }
+
+  return Math.max(1, Math.min(50, Math.floor(value)));
+}
+
+function strategyLabel(strategy: ContextStrategy | undefined): string {
+  return STRATEGY_OPTIONS.find((option) => option.value === strategy)?.label ?? "Strategy";
 }
 
 function readCompressionInfo(value: unknown): CompressionInfo | null {

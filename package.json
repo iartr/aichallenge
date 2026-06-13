@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
-    "compare:compression": "tsx scripts/compare-compression.ts"
+    "compare:compression": "tsx scripts/compare-compression.ts",
+    "compare:strategies": "tsx scripts/compare-strategies.ts"
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21",

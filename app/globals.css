@@ -651,6 +651,145 @@ textarea {
   white-space: pre-wrap;
 }
 
+.strategyField {
+  display: inline-flex;
+  align-items: center;
+}
+
+.strategySelect {
+  width: auto;
+  min-height: 0;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.strategyControls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.field.compact {
+  gap: 4px;
+}
+
+.field.compact input {
+  width: auto;
+  max-width: 110px;
+  min-height: 0;
+  padding: 7px 9px;
+}
+
+.strategyHint {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.factsDetails {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent), white 55%);
+  background: color-mix(in srgb, var(--accent), white 95%);
+}
+
+.factsList {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.factRow {
+  display: grid;
+  grid-template-columns: minmax(0, 0.32fr) minmax(0, 0.68fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.factRow dt {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.factRow dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.branchBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.branchPills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.branchPill {
+  width: auto;
+  min-height: 0;
+  padding: 5px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 850;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.branchPill:hover {
+  border-color: color-mix(in srgb, var(--accent), white 25%);
+  background: #eef7f5;
+}
+
+.branchPill.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent-strong);
+}
+
+.branchEmpty {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.branchActions {
+  display: flex;
+  gap: 8px;
+}
+
 .contextMeter {
   height: 7px;
   overflow: hidden;
@@ -1073,6 +1212,8 @@ pre {
 .iconButton:focus-visible,
 .conversationItem:focus-visible,
 .compressionToggle:focus-visible,
+.strategySelect:focus-visible,
+.branchPill:focus-visible,
 .summaryDetails summary:focus-visible,
 .tokenTablesDetails summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -1185,6 +1326,12 @@ pre {
 
   .compressionStrip {
     gap: 8px;
+  }
+
+  .strategyControls,
+  .branchBar {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .meterLabel {

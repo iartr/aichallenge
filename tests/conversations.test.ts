@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildConversationTitle, normalizeStoredMessages } from "../lib/conversations";
+import { buildConversationTitle, extensionStateFromRecord, normalizeStoredMessages } from "../lib/conversations";
+import { emptyFactsUsageTotals } from "../lib/context-strategies";
+import { initBranchingState } from "../lib/branching";
+import { emptySummarizerUsageTotals } from "../lib/history-compression";
 
 describe("conversation persistence helpers", () => {
   it("builds compact titles from the first user message", () => {
@@ -66,5 +69,35 @@ describe("conversation persistence helpers", () => {
         content: "Hi",
       },
     ]);
+  });
+
+  it("extracts a pass-through update payload from a loaded record", () => {
+    const branches = initBranchingState([{ role: "user", content: "hi" }]);
+    const state = extensionStateFromRecord({
+      id: "id-1",
+      title: "T",
+      messageCount: 1,
+      createdAt: "2026-06-13T00:00:00.000Z",
+      updatedAt: "2026-06-13T00:00:00.000Z",
+      messages: [{ role: "user", content: "hi" }],
+      summary: "Earlier facts.",
+      summaryCoveredCount: 2,
+      summarizerUsage: emptySummarizerUsageTotals(),
+      contextStrategy: "facts",
+      facts: [{ key: "goal", value: "X" }],
+      factsState: { facts: [{ key: "goal", value: "X" }], factsCoveredCount: 3 },
+      factsUsage: emptyFactsUsageTotals(),
+      branches,
+    });
+
+    expect(state).toEqual({
+      summary: "Earlier facts.",
+      summaryCoveredCount: 2,
+      summarizerUsage: emptySummarizerUsageTotals(),
+      contextStrategy: "facts",
+      facts: { facts: [{ key: "goal", value: "X" }], factsCoveredCount: 3 },
+      factsUsage: emptyFactsUsageTotals(),
+      branches,
+    });
   });
 });

@@ -2,6 +2,20 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import type { AgentChatMessage } from "./chat-agent";
 import { normalizeSummarizerUsage, type SummarizerUsageTotals } from "./history-compression";
+import {
+  DEFAULT_CONTEXT_STRATEGY,
+  emptyFactsUsageTotals,
+  normalizeContextStrategy,
+  normalizeFacts,
+  normalizeFactsState,
+  normalizeFactsUsage,
+  serializeFactsState,
+  type ContextStrategy,
+  type FactItem,
+  type FactsState,
+  type FactsUsageTotals,
+} from "./context-strategies";
+import { normalizeBranchingState, type BranchingState } from "./branching";
 import { normalizeMessageTokenUsage } from "./token-usage";
 
 export type ConversationSummary = {
@@ -18,10 +32,30 @@ export type ConversationCompressionState = {
   summarizerUsage: SummarizerUsageTotals;
 };
 
+export type ConversationExtensionState = ConversationCompressionState & {
+  contextStrategy: ContextStrategy;
+  facts: FactItem[];
+  factsState: FactsState;
+  factsUsage: FactsUsageTotals;
+  branches: BranchingState;
+};
+
 export type ConversationRecord = ConversationSummary &
-  ConversationCompressionState & {
+  ConversationExtensionState & {
     messages: AgentChatMessage[];
   };
+
+// Full extension state written on every update (callers pass through unchanged
+// values so a single fixed SET clause replaces the old conditional queries).
+export type ConversationUpdateState = {
+  summary: string;
+  summaryCoveredCount: number;
+  summarizerUsage: SummarizerUsageTotals;
+  contextStrategy: ContextStrategy;
+  facts: FactsState;
+  factsUsage: FactsUsageTotals;
+  branches: BranchingState;
+};
 
 type ConversationRow = {
   id: string;
@@ -31,6 +65,9 @@ type ConversationRow = {
   summary: string | null;
   summary_covered_count: number | string | null;
   summarizer_usage: unknown;
+  context_strategy: string | null;
+  facts: unknown;
+  branches: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -84,6 +121,9 @@ export async function getConversation(userLogin: string, id: string): Promise<Co
       summary,
       summary_covered_count,
       summarizer_usage,
+      context_strategy,
+      facts,
+      branches,
       created_at,
       updated_at
     from conversations
@@ -97,6 +137,7 @@ export async function getConversation(userLogin: string, id: string): Promise<Co
 export async function createConversation(
   userLogin: string,
   messages: AgentChatMessage[],
+  contextStrategy: ContextStrategy = DEFAULT_CONTEXT_STRATEGY,
   title = buildConversationTitle(messages.find((message) => message.role === "user")?.content ?? "New chat"),
 ): Promise<ConversationRecord> {
   await ensureConversationsTable();
@@ -104,8 +145,8 @@ export async function createConversation(
   const id = randomUUID();
   const normalizedMessages = normalizeStoredMessages(messages);
   const [row] = await getSql()<ConversationRow[]>`
-    insert into conversations (id, user_login, title, messages)
-    values (${id}, ${userLogin}, ${title}, ${getSql().json(normalizedMessages)})
+    insert into conversations (id, user_login, title, messages, context_strategy)
+    values (${id}, ${userLogin}, ${title}, ${getSql().json(normalizedMessages)}, ${normalizeContextStrategy(contextStrategy)})
     returning
       id,
       title,
@@ -114,6 +155,9 @@ export async function createConversation(
       summary,
       summary_covered_count,
       summarizer_usage,
+      context_strategy,
+      facts,
+      branches,
       created_at,
       updated_at
   `;
@@ -129,51 +173,55 @@ export async function updateConversation(
   userLogin: string,
   id: string,
   messages: AgentChatMessage[],
-  compression?: ConversationCompressionState,
+  state: ConversationUpdateState,
 ): Promise<ConversationRecord | null> {
   await ensureConversationsTable();
 
   const normalizedMessages = normalizeStoredMessages(messages);
-  // The postgres tagged-template driver does not compose conditional set
-  // clauses, so the compression branch is a separate full query.
-  const [row] = compression
-    ? await getSql()<ConversationRow[]>`
-        update conversations
-        set
-          messages = ${getSql().json(normalizedMessages)},
-          summary = ${compression.summary},
-          summary_covered_count = ${compression.summaryCoveredCount},
-          summarizer_usage = ${getSql().json(compression.summarizerUsage)},
-          updated_at = now()
-        where user_login = ${userLogin} and id = ${id}
-        returning
-          id,
-          title,
-          messages,
-          jsonb_array_length(messages) as message_count,
-          summary,
-          summary_covered_count,
-          summarizer_usage,
-          created_at,
-          updated_at
-      `
-    : await getSql()<ConversationRow[]>`
-        update conversations
-        set messages = ${getSql().json(normalizedMessages)}, updated_at = now()
-        where user_login = ${userLogin} and id = ${id}
-        returning
-          id,
-          title,
-          messages,
-          jsonb_array_length(messages) as message_count,
-          summary,
-          summary_covered_count,
-          summarizer_usage,
-          created_at,
-          updated_at
-      `;
+  // Every extension column is written each time (callers pass through the values
+  // they are not changing), so one fixed SET clause replaces the old per-feature
+  // conditional queries.
+  const [row] = await getSql()<ConversationRow[]>`
+    update conversations
+    set
+      messages = ${getSql().json(normalizedMessages)},
+      summary = ${state.summary},
+      summary_covered_count = ${state.summaryCoveredCount},
+      summarizer_usage = ${getSql().json(state.summarizerUsage)},
+      context_strategy = ${normalizeContextStrategy(state.contextStrategy)},
+      facts = ${getSql().json(serializeFactsState(state.facts, state.factsUsage))},
+      branches = ${getSql().json(state.branches)},
+      updated_at = now()
+    where user_login = ${userLogin} and id = ${id}
+    returning
+      id,
+      title,
+      messages,
+      jsonb_array_length(messages) as message_count,
+      summary,
+      summary_covered_count,
+      summarizer_usage,
+      context_strategy,
+      facts,
+      branches,
+      created_at,
+      updated_at
+  `;
 
   return row ? rowToConversation(row) : null;
+}
+
+/** Build an update payload from a loaded record so callers can override only what changed. */
+export function extensionStateFromRecord(conversation: ConversationRecord): ConversationUpdateState {
+  return {
+    summary: conversation.summary,
+    summaryCoveredCount: conversation.summaryCoveredCount,
+    summarizerUsage: conversation.summarizerUsage,
+    contextStrategy: conversation.contextStrategy,
+    facts: conversation.factsState,
+    factsUsage: conversation.factsUsage,
+    branches: conversation.branches,
+  };
 }
 
 export function buildConversationTitle(content: string) {
@@ -243,6 +291,18 @@ async function ensureConversationsTable() {
         alter table conversations
         add column if not exists summarizer_usage jsonb not null default '{}'::jsonb
       `;
+      await getSql()`
+        alter table conversations
+        add column if not exists context_strategy text not null default 'full'
+      `;
+      await getSql()`
+        alter table conversations
+        add column if not exists facts jsonb not null default '{}'::jsonb
+      `;
+      await getSql()`
+        alter table conversations
+        add column if not exists branches jsonb not null default '{}'::jsonb
+      `;
     });
   }
 
@@ -280,6 +340,7 @@ function rowToConversation(row: ConversationRow): ConversationRecord {
   const messages = normalizeStoredMessages(row.messages);
   const summary = typeof row.summary === "string" ? row.summary : "";
   const coveredCount = Math.floor(Number(row.summary_covered_count ?? 0));
+  const factsState = normalizeFactsState(row.facts);
 
   return {
     ...rowToSummary(row),
@@ -287,6 +348,11 @@ function rowToConversation(row: ConversationRow): ConversationRecord {
     summary,
     summaryCoveredCount: Math.min(Math.max(Number.isFinite(coveredCount) ? coveredCount : 0, 0), messages.length),
     summarizerUsage: normalizeSummarizerUsage(row.summarizer_usage),
+    contextStrategy: normalizeContextStrategy(row.context_strategy),
+    facts: normalizeFacts(row.facts),
+    factsState,
+    factsUsage: isRecord(row.facts) ? normalizeFactsUsage(row.facts.usage) : emptyFactsUsageTotals(),
+    branches: normalizeBranchingState(row.branches),
   };
 }
 
