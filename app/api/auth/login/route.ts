@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ADMIN_LOGIN, AuthConfigError, buildSessionSetCookie, validateAdminCredentials } from "@/lib/auth";
+import { AuthConfigError, buildSessionSetCookie, validateUserCredentials } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -12,24 +12,24 @@ export async function POST(request: Request) {
     return errorResponse("Request body must be valid JSON.", 400);
   }
 
-  if (!process.env.ADMIN_PASSWORD) {
-    return errorResponse("ADMIN_PASSWORD is not configured.", 500);
-  }
-
-  if (!isRecord(body) || !validateAdminCredentials(body.login, body.password, process.env.ADMIN_PASSWORD)) {
+  if (!isRecord(body)) {
     return errorResponse("Invalid login or password.", 401);
   }
 
   try {
+    const user = await validateUserCredentials(body.login, body.password);
+
+    if (!user) {
+      return errorResponse("Invalid login or password.", 401);
+    }
+
     return NextResponse.json(
       {
-        user: {
-          login: ADMIN_LOGIN,
-        },
+        user,
       },
       {
         headers: {
-          "Set-Cookie": buildSessionSetCookie(ADMIN_LOGIN),
+          "Set-Cookie": buildSessionSetCookie(user.login),
         },
       },
     );
@@ -41,6 +41,14 @@ export async function POST(request: Request) {
 function handleError(error: unknown) {
   if (error instanceof AuthConfigError) {
     return errorResponse(error.message, error.status);
+  }
+
+  if (error instanceof Error && "status" in error) {
+    const status = Number((error as { status?: unknown }).status);
+
+    if (Number.isInteger(status) && status >= 400 && status <= 599) {
+      return errorResponse(error.message, status);
+    }
   }
 
   return errorResponse("Login failed.", 500);

@@ -7,6 +7,7 @@ coverage/
 *.iml
 .env
 .env*.local
+.local-secrets/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

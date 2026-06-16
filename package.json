@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
+    "seed:users": "tsx scripts/seed-users.ts",
     "compare:compression": "tsx scripts/compare-compression.ts",
     "compare:strategies": "tsx scripts/compare-strategies.ts"
   },

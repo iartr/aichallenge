@@ -58,6 +58,18 @@ async function runMigrations() {
   await sql`create extension if not exists vector`;
 
   await sql`
+    create table if not exists app_users (
+      login text primary key,
+      password_algorithm text not null,
+      password_salt text not null,
+      password_hash text not null,
+      password_key_length integer not null default 64,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `;
+
+  await sql`
     create table if not exists admin_settings (
       id boolean primary key default true,
       llm_provider text not null default 'openai',

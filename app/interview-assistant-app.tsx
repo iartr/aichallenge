@@ -132,6 +132,8 @@ const STT_OPTIONS = ["AssemblyAI default", "universal", "Deepgram Nova-2", "Whis
 
 export function InterviewAssistantApp() {
   const [isAuthed, setIsAuthed] = useState(false);
+  const [user, setUser] = useState<SessionResponse["user"]>(null);
+  const [loginName, setLoginName] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("");
   const [screen, setScreen] = useState<Screen>("landing");
   const [adminTab, setAdminTab] = useState<AdminSubtab>("models");
@@ -186,11 +188,13 @@ export function InterviewAssistantApp() {
 
     if (!response.ok) {
       setIsAuthed(false);
+      setUser(null);
       return;
     }
 
     const data = (await response.json()) as SessionResponse;
     setIsAuthed(Boolean(data.user));
+    setUser(data.user ?? null);
   }, []);
 
   const loadInterviews = useCallback(async () => {
@@ -246,7 +250,7 @@ export function InterviewAssistantApp() {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ login: "admin", password: loginPassword }),
+      body: JSON.stringify({ login: loginName, password: loginPassword }),
     });
 
     if (!response.ok) {
@@ -254,8 +258,28 @@ export function InterviewAssistantApp() {
       return;
     }
 
-    setIsAuthed(true);
+    const data = (await response.json()) as SessionResponse;
+    setUser(data.user ?? null);
+    setLoginPassword("");
+    setIsAuthed(Boolean(data.user));
     setScreen("landing");
+  }
+
+  async function logout() {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+    });
+
+    setIsAuthed(false);
+    setUser(null);
+    setLoginPassword("");
+    setScreen("landing");
+    setInterviews([]);
+    setSelectedId("");
+    setSelected(null);
+    setProfileMemory([]);
+    setKnowledgeMemory([]);
+    setError("");
   }
 
   async function createInterviewFlow(event: FormEvent<HTMLFormElement>) {
@@ -432,11 +456,21 @@ export function InterviewAssistantApp() {
   }
 
   if (!isAuthed) {
-    return <AuthScreen loginPassword={loginPassword} setLoginPassword={setLoginPassword} login={login} error={error} />;
+    return (
+      <AuthScreen
+        loginName={loginName}
+        setLoginName={setLoginName}
+        loginPassword={loginPassword}
+        setLoginPassword={setLoginPassword}
+        login={login}
+        error={error}
+      />
+    );
   }
 
   return (
     <main className="of-shell">
+      {user ? <SessionBadge login={user.login} logout={logout} /> : null}
       {error ? <div className="of-error" role="alert">{error}</div> : null}
 
       {screen === "landing" ? (
@@ -526,11 +560,15 @@ export function InterviewAssistantApp() {
 }
 
 function AuthScreen({
+  loginName,
+  setLoginName,
   loginPassword,
   setLoginPassword,
   login,
   error,
 }: {
+  loginName: string;
+  setLoginName: (value: string) => void;
   loginPassword: string;
   setLoginPassword: (value: string) => void;
   login: (event: FormEvent<HTMLFormElement>) => void;
@@ -545,6 +583,13 @@ function AuthScreen({
           <h1>OfferFactory.ai</h1>
           <p>Прототип разбора IT-собеседований с управляемыми слоями памяти.</p>
         </div>
+        <input
+          type="text"
+          value={loginName}
+          onChange={(event) => setLoginName(event.target.value)}
+          placeholder="login"
+          autoComplete="username"
+        />
         <input
           type="password"
           value={loginPassword}
@@ -1361,6 +1406,15 @@ function AdminMemoryTab({
           <button type="submit">Добавить паттерн в базу</button>
         </form>
       </section>
+    </div>
+  );
+}
+
+function SessionBadge({ login, logout }: { login: string; logout: () => Promise<void> }) {
+  return (
+    <div className="session-badge">
+      <span>{login}</span>
+      <button type="button" onClick={() => deferAsync(logout)}>Выйти</button>
     </div>
   );
 }

@@ -395,6 +395,42 @@ pre {
   margin: 0;
 }
 
+.session-badge {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-sm);
+  padding: 6px 6px 6px 14px;
+  backdrop-filter: blur(10px);
+}
+
+.session-badge span {
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-badge button {
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .authScreen {
   min-height: 100svh;
   display: grid;
