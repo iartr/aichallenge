@@ -49,7 +49,7 @@ export function parseJsonText(value: string, fallback: unknown) {
 }
 
 export function errorToResponse(error: unknown) {
-  const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : 500;
+  const status = readErrorStatus(error);
   const message = error instanceof Error ? error.message : "Unexpected error.";
 
   return Response.json(
@@ -60,4 +60,20 @@ export function errorToResponse(error: unknown) {
     },
     { status },
   );
+}
+
+function readErrorStatus(error: unknown) {
+  if (error instanceof AppStoreError) {
+    return error.status;
+  }
+
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const status = Number((error as { status?: unknown }).status);
+
+    if (Number.isInteger(status) && status >= 400 && status <= 599) {
+      return status;
+    }
+  }
+
+  return 500;
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AppStoreError, ensureAppSchema, getSql, normalizeJsonArray, normalizeJsonRecord, toIsoString } from "./db";
+import { AppStoreError, ensureAppSchema, getSql, normalizeJsonArray, normalizeJsonRecord, sqlJson, toIsoString } from "./db";
 import { recordAudit } from "./interview-store";
 
 export type ProfileMemoryItem = {
@@ -46,10 +46,15 @@ type KnowledgeMemoryRow = {
 
 export async function listProfileMemory(userLogin: string, limit = 50): Promise<ProfileMemoryItem[]> {
   await ensureAppSchema();
+
   const rows = await getSql()<ProfileMemoryRow[]>`
     select id, user_login, statement, tags, payload, source, created_at, updated_at
-    from profile_memory where user_login = ${userLogin} order by updated_at desc limit ${limit}
+    from profile_memory
+    where user_login = ${userLogin}
+    order by updated_at desc
+    limit ${limit}
   `;
+
   return rows.map(rowToProfileMemory);
 }
 
@@ -76,23 +81,36 @@ export async function createProfileMemory(input: {
   const tags = Array.isArray(input.tags) ? input.tags : [];
   const payload = normalizeJsonRecord(input.payload);
   const source = typeof input.source === "string" && input.source.trim() ? input.source.trim() : "explicit";
+
   const [row] = await getSql()<ProfileMemoryRow[]>`
     insert into profile_memory (id, user_login, statement, tags, payload, source)
-    values (${id}, ${input.userLogin}, ${statement}, ${getSql().json(tags)}, ${getSql().json(payload)}, ${source})
+    values (${id}, ${input.userLogin}, ${statement}, ${sqlJson(tags)}, ${sqlJson(payload)}, ${source})
     returning id, user_login, statement, tags, payload, source, created_at, updated_at
   `;
 
-  if (!row) throw new AppStoreError("Profile memory was not saved.");
-  await recordAudit(input.userLogin, input.interviewId ?? null, "profile", "profile_memory_written_explicitly", { id, statement, source });
+  if (!row) {
+    throw new AppStoreError("Profile memory was not saved.");
+  }
+
+  await recordAudit(input.userLogin, input.interviewId ?? null, "profile", "profile_memory_written_explicitly", {
+    id,
+    statement,
+    source,
+  });
+
   return rowToProfileMemory(row);
 }
 
 export async function listKnowledgeMemory(limit = 50): Promise<KnowledgeMemoryItem[]> {
   await ensureAppSchema();
+
   const rows = await getSql()<KnowledgeMemoryRow[]>`
     select id, title, content, tags, payload, created_at, updated_at
-    from knowledge_memory order by updated_at desc limit ${limit}
+    from knowledge_memory
+    order by updated_at desc
+    limit ${limit}
   `;
+
   return rows.map(rowToKnowledgeMemory);
 }
 
@@ -104,28 +122,45 @@ export async function createKnowledgeMemory(input: {
   payload?: unknown;
 }): Promise<KnowledgeMemoryItem> {
   await ensureAppSchema();
+
   const title = readRequiredText(input.title, "title");
   const content = readRequiredText(input.content, "content");
   const tags = Array.isArray(input.tags) ? input.tags : [];
   const payload = normalizeJsonRecord(input.payload);
   const id = randomUUID();
+
   const [row] = await getSql()<KnowledgeMemoryRow[]>`
     insert into knowledge_memory (id, title, content, tags, payload)
-    values (${id}, ${title}, ${content}, ${getSql().json(tags)}, ${getSql().json(payload)})
+    values (${id}, ${title}, ${content}, ${sqlJson(tags)}, ${sqlJson(payload)})
     returning id, title, content, tags, payload, created_at, updated_at
   `;
 
-  if (!row) throw new AppStoreError("Knowledge memory was not saved.");
-  await recordAudit(input.userLogin, null, "knowledge", "knowledge_memory_written", { id, title });
+  if (!row) {
+    throw new AppStoreError("Knowledge memory was not saved.");
+  }
+
+  await recordAudit(input.userLogin, null, "knowledge", "knowledge_memory_written", {
+    id,
+    title,
+  });
+
   return rowToKnowledgeMemory(row);
 }
 
 export function formatProfileMemoryForPrompt(items: ProfileMemoryItem[]) {
-  return items.length === 0 ? "Нет явно сохраненной profile memory." : items.map((item, index) => `${index + 1}. ${item.statement}`).join("\n");
+  if (items.length === 0) {
+    return "Нет явно сохраненной profile memory.";
+  }
+
+  return items.map((item, index) => `${index + 1}. ${item.statement}`).join("\n");
 }
 
 export function formatKnowledgeMemoryForPrompt(items: KnowledgeMemoryItem[]) {
-  return items.length === 0 ? "Knowledge memory пока пустая." : items.map((item, index) => `${index + 1}. ${item.title}: ${item.content}`).join("\n");
+  if (items.length === 0) {
+    return "Knowledge memory пока пустая.";
+  }
+
+  return items.map((item, index) => `${index + 1}. ${item.title}: ${item.content}`).join("\n");
 }
 
 function rowToProfileMemory(row: ProfileMemoryRow): ProfileMemoryItem {
@@ -157,5 +192,6 @@ function readRequiredText(value: unknown, field: string) {
   if (typeof value !== "string" || !value.trim()) {
     throw new AppStoreError(`${field} is required.`, 400);
   }
+
   return value.trim().slice(0, 12000);
 }

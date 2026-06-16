@@ -1,7 +1,7 @@
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { getAdminSettings } from "@/lib/admin-settings";
-import { getAssemblyAITranscript, submitAssemblyAITranscript } from "@/lib/assemblyai";
-import { AppStoreError, normalizeJsonRecord } from "@/lib/db";
+import { getAssemblyAITranscript, submitAssemblyAITranscript, type AssemblyAITranscript } from "@/lib/assemblyai";
+import { AppStoreError, isRecord, normalizeJsonRecord } from "@/lib/db";
 import {
   appendConversationMessage,
   createAsset,
@@ -23,7 +23,11 @@ import { errorToResponse, readJsonBody, readOptionalString, readRequiredString }
 
 export const runtime = "nodejs";
 
-type RouteContext = { params: Promise<{ id: string }> };
+type RouteContext = {
+  params: Promise<{
+    id: string;
+  }>;
+};
 
 export async function POST(request: Request, context: RouteContext) {
   try {
@@ -55,7 +59,10 @@ export async function POST(request: Request, context: RouteContext) {
 
 async function presignUpload(userLogin: string, interviewId: string, body: Record<string, unknown>) {
   const interview = await getInterviewBundle(userLogin, interviewId);
-  if (!interview) throw new AppStoreError("Interview not found.", 404);
+
+  if (!interview) {
+    throw new AppStoreError("Interview not found.", 404);
+  }
 
   const kind = readAssetKind(body.kind);
   const fileName = readRequiredString(body, "fileName", 240);
@@ -72,14 +79,32 @@ async function presignUpload(userLogin: string, interviewId: string, body: Recor
     uploadStatus: "pending_upload",
   });
   const uploadUrl = createPresignedS3Url({ method: "PUT", key: s3Key, contentType, expiresSeconds: 3600 });
-  await recordAudit(userLogin, interviewId, "task", "asset_upload_presigned", { assetId: asset.id, kind, s3Key });
 
-  return { asset, upload: { method: "PUT", url: uploadUrl, headers: { "Content-Type": contentType }, expiresSeconds: 3600 } };
+  await recordAudit(userLogin, interviewId, "task", "asset_upload_presigned", {
+    assetId: asset.id,
+    kind,
+    s3Key,
+  });
+
+  return {
+    asset,
+    upload: {
+      method: "PUT",
+      url: uploadUrl,
+      headers: {
+        "Content-Type": contentType,
+      },
+      expiresSeconds: 3600,
+    },
+  };
 }
 
 async function registerUrlAsset(userLogin: string, interviewId: string, body: Record<string, unknown>) {
   const interview = await getInterviewBundle(userLogin, interviewId);
-  if (!interview) throw new AppStoreError("Interview not found.", 404);
+
+  if (!interview) {
+    throw new AppStoreError("Interview not found.", 404);
+  }
 
   const kind = readAssetKind(body.kind);
   const externalUrl = readRequiredString(body, "url", 4000);
@@ -90,43 +115,99 @@ async function registerUrlAsset(userLogin: string, interviewId: string, body: Re
     originalName: readOptionalString(body, "name", 240) || externalUrl,
     uploadStatus: "ready",
   });
-  await recordAudit(userLogin, interviewId, "task", "url_asset_registered", { assetId: asset.id, kind, externalUrl });
+
+  await recordAudit(userLogin, interviewId, "task", "url_asset_registered", {
+    assetId: asset.id,
+    kind,
+    externalUrl,
+  });
+
   return { asset };
 }
 
 async function markUploaded(userLogin: string, interviewId: string, body: Record<string, unknown>) {
   const assetId = readRequiredString(body, "assetId", 80);
   const asset = await markAssetUploaded(userLogin, interviewId, assetId);
-  if (!asset) throw new AppStoreError("Asset not found.", 404);
+
+  if (!asset) {
+    throw new AppStoreError("Asset not found.", 404);
+  }
+
   await updateInterviewPatch(userLogin, interviewId, { status: "uploaded" });
+
   return { asset };
 }
 
 async function transcribeInterview(userLogin: string, interviewId: string, body: Record<string, unknown>) {
   const settings = await getAdminSettings();
-  const existingTranscriptId = readOptionalString(body, "transcriptId", 120);
+  const requestedTranscriptId = readOptionalString(body, "transcriptId", 120);
+  const interview = await getInterviewBundle(userLogin, interviewId);
+
+  if (!interview) {
+    throw new AppStoreError("Interview not found.", 404);
+  }
+
+  const existingTranscriptId = requestedTranscriptId || readStoredAssemblyAITranscriptId(interview.transcriptMetadata);
 
   if (existingTranscriptId) {
     const transcript = await getAssemblyAITranscript(existingTranscriptId);
-    const patch = transcript.status === "completed"
-      ? { status: "transcribed" as const, transcript: transcript.text, transcriptMetadata: { assemblyai: transcript.raw }, errorMessage: "" }
-      : transcript.status === "error"
-        ? { status: "error" as const, transcriptMetadata: { assemblyai: transcript.raw }, errorMessage: "AssemblyAI transcription failed." }
-        : { status: "transcribing" as const, transcriptMetadata: { assemblyai: transcript.raw } };
-    const interview = await updateInterviewPatch(userLogin, interviewId, patch);
-    return { transcript, interview };
+    const updated = await updateInterviewPatch(userLogin, interviewId, buildTranscriptPatch(transcript, interview.transcriptMetadata));
+
+    return { transcript, interview: updated };
   }
 
-  const interview = await getInterviewBundle(userLogin, interviewId);
-  if (!interview) throw new AppStoreError("Interview not found.", 404);
   const audioUrl = await resolveAudioUrl(interviewId, interview.sourceUrl);
-  const transcript = await submitAssemblyAITranscript({ audioUrl, speechModel: settings.sttModel });
+  const transcript = await submitAssemblyAITranscript({
+    audioUrl,
+    speechModel: settings.sttModel,
+  });
   const updated = await updateInterviewPatch(userLogin, interviewId, {
     status: "transcribing",
     transcriptMetadata: { assemblyai: transcript.raw, audioUrlSource: interview.sourceUrl ? "external_url" : "s3_signed_get" },
   });
-  await recordAudit(userLogin, interviewId, "task", "transcription_started", { provider: "assemblyai", transcriptId: transcript.id, sttModel: settings.sttModel });
+
+  await recordAudit(userLogin, interviewId, "task", "transcription_started", {
+    provider: "assemblyai",
+    transcriptId: transcript.id,
+    sttModel: settings.sttModel,
+  });
+
   return { transcript, interview: updated };
+}
+
+function buildTranscriptPatch(transcript: AssemblyAITranscript, currentMetadata: Record<string, unknown>) {
+  const transcriptMetadata = {
+    ...currentMetadata,
+    assemblyai: transcript.raw,
+  };
+
+  if (transcript.status === "completed") {
+    return {
+      status: "transcribed" as const,
+      transcript: transcript.text,
+      transcriptMetadata,
+      errorMessage: "",
+    };
+  }
+
+  if (transcript.status === "error") {
+    return {
+      status: "error" as const,
+      transcriptMetadata,
+      errorMessage: "AssemblyAI transcription failed.",
+    };
+  }
+
+  return {
+    status: "transcribing" as const,
+    transcriptMetadata,
+  };
+}
+
+function readStoredAssemblyAITranscriptId(transcriptMetadata: Record<string, unknown>) {
+  const assemblyai = transcriptMetadata.assemblyai;
+
+  return isRecord(assemblyai) && typeof assemblyai.id === "string" ? assemblyai.id : "";
 }
 
 async function analyzeInterview(userLogin: string, interviewId: string) {
@@ -136,18 +217,32 @@ async function analyzeInterview(userLogin: string, interviewId: string) {
     listKnowledgeMemory(20),
     getInterviewBundle(userLogin, interviewId),
   ]);
-  if (!interview) throw new AppStoreError("Interview not found.", 404);
+
+  if (!interview) {
+    throw new AppStoreError("Interview not found.", 404);
+  }
 
   const prompt = buildAnalysisPrompt({ settings, interview, profileMemory, knowledgeMemory });
   await updateInterviewPatch(userLogin, interviewId, { status: "analyzing", errorMessage: "" });
-  const result = await generateText({ provider: settings.llmProvider, model: settings.llmModel, system: prompt.system, messages: prompt.messages, maxTokens: 6000 });
+  const result = await generateText({
+    provider: settings.llmProvider,
+    model: settings.llmModel,
+    system: prompt.system,
+    messages: prompt.messages,
+    maxTokens: 6000,
+  });
   const parsed = normalizeAnalysisOutput(extractJsonObject(result.outputText));
   const taskMemory = normalizeJsonRecord(parsed.taskMemory);
   const nextTaskMemory = {
     ...interview.taskMemory,
     ...taskMemory,
     transcript: interview.transcript,
-    assets: interview.assets.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.originalName, sourceType: asset.sourceType })),
+    assets: interview.assets.map((asset) => ({
+      id: asset.id,
+      kind: asset.kind,
+      name: asset.originalName,
+      sourceType: asset.sourceType,
+    })),
     analysisSummary: typeof parsed.summary === "string" ? parsed.summary : "",
     analyzedAt: new Date().toISOString(),
   };
@@ -155,8 +250,13 @@ async function analyzeInterview(userLogin: string, interviewId: string) {
     status: "analyzed",
     taskMemory: nextTaskMemory,
     llmOutput: parsed,
-    providerMetadata: { provider: result.provider, model: result.model, usage: result.usage },
+    providerMetadata: {
+      provider: result.provider,
+      model: result.model,
+      usage: result.usage,
+    },
   });
+
   await saveLlmRun({
     userLogin,
     interviewId,
@@ -168,10 +268,17 @@ async function analyzeInterview(userLogin: string, interviewId: string) {
     output: parsed,
     providerMetadata: { usage: result.usage, raw: result.raw },
   });
-  await recordAudit(userLogin, interviewId, "task", "task_memory_written", { keys: Object.keys(nextTaskMemory) });
+
+  await recordAudit(userLogin, interviewId, "task", "task_memory_written", {
+    keys: Object.keys(nextTaskMemory),
+  });
+
   if (Array.isArray(parsed.candidateProfileMemory) && parsed.candidateProfileMemory.length > 0) {
-    await recordAudit(userLogin, interviewId, "profile", "profile_memory_suggested_not_saved", { candidates: parsed.candidateProfileMemory });
+    await recordAudit(userLogin, interviewId, "profile", "profile_memory_suggested_not_saved", {
+      candidates: parsed.candidateProfileMemory,
+    });
   }
+
   return { interview: updated, analysis: parsed };
 }
 
@@ -184,12 +291,34 @@ async function chatAboutInterview(userLogin: string, interviewId: string, body: 
     getInterviewBundle(userLogin, interviewId),
     listConversationMessages(userLogin, interviewId, 200),
   ]);
-  if (!interview) throw new AppStoreError("Interview not found.", 404);
 
-  const prompt = buildChatPrompt({ settings, interview, profileMemory, knowledgeMemory, workingMessages, userMessage: message });
+  if (!interview) {
+    throw new AppStoreError("Interview not found.", 404);
+  }
+
+  const prompt = buildChatPrompt({
+    settings,
+    interview,
+    profileMemory,
+    knowledgeMemory,
+    workingMessages,
+    userMessage: message,
+  });
   await appendConversationMessage(userLogin, interviewId, "user", message, { memoryLayer: "working" });
-  const result = await generateText({ provider: settings.llmProvider, model: settings.llmModel, system: prompt.system, messages: prompt.messages, maxTokens: 3000 });
-  const assistantMessage = await appendConversationMessage(userLogin, interviewId, "assistant", result.outputText, { provider: result.provider, model: result.model, usage: result.usage, memoryLayer: "working" });
+  const result = await generateText({
+    provider: settings.llmProvider,
+    model: settings.llmModel,
+    system: prompt.system,
+    messages: prompt.messages,
+    maxTokens: 3000,
+  });
+  const assistantMessage = await appendConversationMessage(userLogin, interviewId, "assistant", result.outputText, {
+    provider: result.provider,
+    model: result.model,
+    usage: result.usage,
+    memoryLayer: "working",
+  });
+
   await saveLlmRun({
     userLogin,
     interviewId,
@@ -201,19 +330,42 @@ async function chatAboutInterview(userLogin: string, interviewId: string, body: 
     output: { text: result.outputText },
     providerMetadata: { usage: result.usage, raw: result.raw },
   });
-  return { message: assistantMessage, workingMemory: { sentMessages: prompt.promptVariables.loadedWorkingMessages, limit: prompt.promptVariables.workingMemoryLimit } };
+
+  return {
+    message: assistantMessage,
+    workingMemory: {
+      sentMessages: prompt.promptVariables.loadedWorkingMessages,
+      limit: prompt.promptVariables.workingMemoryLimit,
+    },
+  };
 }
 
 async function resolveAudioUrl(interviewId: string, sourceUrl: string) {
-  if (sourceUrl) return sourceUrl;
+  if (sourceUrl) {
+    return sourceUrl;
+  }
+
   const asset = await findRecordingAsset(interviewId);
-  if (!asset) throw new AppStoreError("No recording asset or source URL is attached.", 400);
-  if (asset.sourceType === "url") return asset.externalUrl;
-  if (!asset.s3Key) throw new AppStoreError("Recording asset has no S3 key.", 400);
+
+  if (!asset) {
+    throw new AppStoreError("No recording asset or source URL is attached.", 400);
+  }
+
+  if (asset.sourceType === "url") {
+    return asset.externalUrl;
+  }
+
+  if (!asset.s3Key) {
+    throw new AppStoreError("Recording asset has no S3 key.", 400);
+  }
+
   return createPresignedS3Url({ method: "GET", key: asset.s3Key, expiresSeconds: 3600 * 6 });
 }
 
 function readAssetKind(value: unknown): AssetKind {
-  if (value === "recording" || value === "screenshot") return value;
+  if (value === "recording" || value === "screenshot") {
+    return value;
+  }
+
   throw new AppStoreError("kind must be recording or screenshot.", 400);
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AppStoreError, ensureAppSchema, getSql, normalizeJsonArray, normalizeJsonRecord, toIsoString } from "./db";
+import { AppStoreError, ensureAppSchema, getSql, normalizeJsonArray, normalizeJsonRecord, sqlJson, toIsoString } from "./db";
 
 export type LlmProvider = "openai" | "anthropic";
 
@@ -39,14 +39,22 @@ type SettingsRow = {
   updated_at: Date | string;
 };
 
-export const DEFAULT_SYSTEM_PROMPT = `Ты ассистент для разбора IT-собеседований. Строго разделяй memory layers: working memory — текущий чат; task memory — только данные конкретного интервью; profile memory — долгосрочные факты о пользователе, которые нельзя сохранять без явного подтверждения; knowledge memory — обобщенные знания продукта. Не смешивай task memory и profile memory. Новые долгосрочные наблюдения возвращай только как candidateProfileMemory.`;
+export const DEFAULT_SYSTEM_PROMPT = `Ты интервью-ассистент для IT-собеседований. Анализируй запись строго по контексту интервью и разделяй память на слои.
 
-export const DEFAULT_USER_PROMPT_TEMPLATE = `Проанализируй интервью и верни валидный JSON без markdown.
+Правила памяти:
+- working memory: только текущий диалог после разбора; это последние сообщения и summary чата.
+- task memory: данные конкретного интервью: компания, роль, уровень, тип, задания, транскрипт, ошибки, сильные/слабые места, итоговый фидбэк.
+- profile memory: долгосрочные сведения о пользователе. Не записывай их автоматически; только предложи кандидатов на сохранение.
+- knowledge memory: обобщенные знания продукта, не привязанные к пользователю.
+
+Не смешивай task memory и profile memory. Любое новое profile memory должно быть оформлено как candidateProfileMemory и ждать отдельного подтверждения пользователя.`;
+
+export const DEFAULT_USER_PROMPT_TEMPLATE = `Проанализируй интервью и верни JSON без markdown.
 
 Контекст интервью:
 {{interviewContext}}
 
-Ассеты:
+Скриншоты и задания:
 {{assetsContext}}
 
 Транскрипт:
@@ -58,22 +66,39 @@ Profile memory, сохраненная явно:
 Knowledge memory продукта:
 {{knowledgeMemory}}
 
-Схема: {"score":number,"summary":string,"timeline":array,"mistakes":array,"strengths":array,"weaknesses":array,"taskMemory":object,"candidateProfileMemory":array,"knowledgeGaps":array}`;
+Верни JSON по схеме:
+{
+  "score": number,
+  "summary": string,
+  "timeline": [{"time": string, "event": string, "feedback": string}],
+  "mistakes": [{"topic": string, "evidence": string, "impact": string, "betterAnswer": string}],
+  "strengths": [{"topic": string, "evidence": string}],
+  "weaknesses": [{"topic": string, "evidence": string, "trainingPlan": string}],
+  "taskMemory": {"company": string, "position": string, "targetLevel": string, "interviewType": string, "foundErrors": array, "strengths": array, "weaknesses": array, "finalFeedback": string},
+  "candidateProfileMemory": [{"statement": string, "reason": string, "confidence": number}],
+  "knowledgeGaps": [{"topic": string, "recommendation": string}]
+}`;
 
-export const DEFAULT_ASSISTANT_PROMPT_TEMPLATE = "Верну только JSON. Profile memory не сохраняю автоматически.";
+export const DEFAULT_ASSISTANT_PROMPT_TEMPLATE = `Я верну только валидный JSON, не буду автоматически сохранять profile memory и сохраню task memory отдельно от профиля пользователя.`;
 
 export const DEFAULT_SETTINGS: AdminSettings = {
   llmProvider: "openai",
   llmModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
   sttProvider: "assemblyai",
-  sttModel: "best",
+  sttModel: "universal-2",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   userPromptTemplate: DEFAULT_USER_PROMPT_TEMPLATE,
   assistantPromptTemplate: DEFAULT_ASSISTANT_PROMPT_TEMPLATE,
-  promptVariables: { workingMemoryLimit: 12 },
+  promptVariables: {
+    workingMemoryLimit: 12,
+    rubric: "Оценивай конкретику, техническую точность, коммуникацию, структуру ответа и соответствие целевому уровню.",
+  },
   providerMetadata: {},
   ragEnabled: false,
-  ragConfig: { embeddingModel: "text-embedding-3-small", topK: 6 },
+  ragConfig: {
+    embeddingModel: "text-embedding-3-small",
+    topK: 6,
+  },
   mcpEnabled: false,
   mcpServers: [],
   updatedAt: new Date(0).toISOString(),
@@ -81,22 +106,48 @@ export const DEFAULT_SETTINGS: AdminSettings = {
 
 export async function getAdminSettings(): Promise<AdminSettings> {
   await ensureAppSchema();
+
   const [row] = await getSql()<SettingsRow[]>`
-    select llm_provider, llm_model, stt_provider, stt_model, system_prompt, user_prompt_template,
-      assistant_prompt_template, prompt_variables, provider_metadata, rag_enabled, rag_config,
-      mcp_enabled, mcp_servers, updated_at
-    from admin_settings where id = true limit 1
+    select
+      llm_provider,
+      llm_model,
+      stt_provider,
+      stt_model,
+      system_prompt,
+      user_prompt_template,
+      assistant_prompt_template,
+      prompt_variables,
+      provider_metadata,
+      rag_enabled,
+      rag_config,
+      mcp_enabled,
+      mcp_servers,
+      updated_at
+    from admin_settings
+    where id = true
+    limit 1
   `;
 
-  return row ? normalizeSettingsRow(row) : DEFAULT_SETTINGS;
+  if (!row) {
+    return DEFAULT_SETTINGS;
+  }
+
+  return normalizeSettingsRow(row);
 }
 
 export async function updateAdminSettings(input: AdminSettingsInput): Promise<AdminSettings> {
   await ensureAppSchema();
+
   const current = await getAdminSettings();
-  const next: AdminSettings = { ...current, ...normalizeSettingsInput(input), updatedAt: new Date().toISOString() };
+  const next: AdminSettings = {
+    ...current,
+    ...normalizeSettingsInput(input),
+    updatedAt: new Date().toISOString(),
+  };
+
   const [row] = await getSql()<SettingsRow[]>`
-    update admin_settings set
+    update admin_settings
+    set
       llm_provider = ${next.llmProvider},
       llm_model = ${next.llmModel},
       stt_provider = ${next.sttProvider},
@@ -104,29 +155,46 @@ export async function updateAdminSettings(input: AdminSettingsInput): Promise<Ad
       system_prompt = ${next.systemPrompt},
       user_prompt_template = ${next.userPromptTemplate},
       assistant_prompt_template = ${next.assistantPromptTemplate},
-      prompt_variables = ${getSql().json(next.promptVariables)},
-      provider_metadata = ${getSql().json(next.providerMetadata)},
+      prompt_variables = ${sqlJson(next.promptVariables)},
+      provider_metadata = ${sqlJson(next.providerMetadata)},
       rag_enabled = ${next.ragEnabled},
-      rag_config = ${getSql().json(next.ragConfig)},
+      rag_config = ${sqlJson(next.ragConfig)},
       mcp_enabled = ${next.mcpEnabled},
-      mcp_servers = ${getSql().json(next.mcpServers)},
+      mcp_servers = ${sqlJson(next.mcpServers)},
       updated_at = now()
     where id = true
-    returning llm_provider, llm_model, stt_provider, stt_model, system_prompt, user_prompt_template,
-      assistant_prompt_template, prompt_variables, provider_metadata, rag_enabled, rag_config,
-      mcp_enabled, mcp_servers, updated_at
+    returning
+      llm_provider,
+      llm_model,
+      stt_provider,
+      stt_model,
+      system_prompt,
+      user_prompt_template,
+      assistant_prompt_template,
+      prompt_variables,
+      provider_metadata,
+      rag_enabled,
+      rag_config,
+      mcp_enabled,
+      mcp_servers,
+      updated_at
   `;
 
-  if (!row) throw new AppStoreError("Admin settings were not updated.");
+  if (!row) {
+    throw new AppStoreError("Admin settings were not updated.");
+  }
 
-  await getSql()`insert into memory_audit_events (id, user_login, layer, action, payload)
-    values (${randomUUID()}, 'admin', 'system', 'admin_settings_updated', ${getSql().json({ llmProvider: next.llmProvider, llmModel: next.llmModel, sttModel: next.sttModel })})`;
+  await getSql()`
+    insert into memory_audit_events (id, user_login, layer, action, payload)
+    values (${randomUUID()}, 'admin', 'system', 'admin_settings_updated', ${sqlJson({ llmProvider: next.llmProvider, llmModel: next.llmModel, sttModel: next.sttModel })})
+  `;
 
   return normalizeSettingsRow(row);
 }
 
 function normalizeSettingsInput(input: AdminSettingsInput): AdminSettingsInput {
   const provider = input.llmProvider === "anthropic" ? "anthropic" : input.llmProvider === "openai" ? "openai" : undefined;
+
   return {
     ...(provider ? { llmProvider: provider } : {}),
     ...(typeof input.llmModel === "string" && input.llmModel.trim() ? { llmModel: input.llmModel.trim() } : {}),
@@ -145,8 +213,10 @@ function normalizeSettingsInput(input: AdminSettingsInput): AdminSettingsInput {
 }
 
 function normalizeSettingsRow(row: SettingsRow): AdminSettings {
+  const llmProvider: LlmProvider = row.llm_provider === "anthropic" ? "anthropic" : "openai";
+
   return {
-    llmProvider: row.llm_provider === "anthropic" ? "anthropic" : "openai",
+    llmProvider,
     llmModel: row.llm_model || DEFAULT_SETTINGS.llmModel,
     sttProvider: "assemblyai",
     sttModel: row.stt_model || DEFAULT_SETTINGS.sttModel,

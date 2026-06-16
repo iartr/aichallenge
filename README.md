@@ -31,4 +31,4 @@ Postgres stores JSONB payloads for task memory, LLM output, provider metadata an
 5. Make sure the Postgres database supports the `vector` extension. The app runs `create extension if not exists vector` on first DB access.
 6. Configure an S3-compatible bucket and CORS rule that allows browser `PUT` uploads from the Railway domain.
 
-The current implementation stores S3 object keys in Postgres and signs upload/download endpoints through the storage helper. For production, use an S3-compatible endpoint that supports browser uploads from the Railway domain.
+The app signs S3 URLs itself and does not require an AWS SDK. Use `S3_ENDPOINT` as the origin of an S3-compatible API endpoint; keys are signed path-style as `/bucket/key`.

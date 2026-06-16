@@ -26,6 +26,7 @@ export type LlmResult = {
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
+const LLM_TIMEOUT_MS = 60_000;
 
 export async function generateText(input: GenerateTextInput): Promise<LlmResult> {
   if (input.provider === "anthropic") {
@@ -47,13 +48,18 @@ async function generateOpenAIText(input: GenerateTextInput): Promise<LlmResult> 
     instructions: input.system,
     input: input.messages.map((message) => ({
       role: message.role,
-      content: message.content,
+      content: [
+        {
+          type: message.role === "assistant" ? "output_text" : "input_text",
+          text: message.content,
+        },
+      ],
     })),
     ...(input.maxTokens ? { max_output_tokens: input.maxTokens } : {}),
     ...(typeof input.temperature === "number" ? { temperature: input.temperature } : {}),
   };
 
-  const response = await fetch(OPENAI_RESPONSES_URL, {
+  const response = await fetchLlm(OPENAI_RESPONSES_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -83,7 +89,7 @@ async function generateAnthropicText(input: GenerateTextInput): Promise<LlmResul
     throw new AppStoreError("ANTHROPIC_API_KEY is not configured.");
   }
 
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
+  const response = await fetchLlm(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
     headers: {
       "x-api-key": apiKey,
@@ -111,6 +117,18 @@ async function generateAnthropicText(input: GenerateTextInput): Promise<LlmResul
     raw,
     usage: isRecord(raw) && isRecord(raw.usage) ? raw.usage : {},
   };
+}
+
+async function fetchLlm(url: string, init: RequestInit) {
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "LLM request failed.";
+    throw new AppStoreError(`LLM request timed out or failed: ${message}`, 504);
+  }
 }
 
 async function readJsonOrText(response: Response) {

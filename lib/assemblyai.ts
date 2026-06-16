@@ -1,6 +1,7 @@
 import { AppStoreError, isRecord } from "./db";
 
 const ASSEMBLYAI_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript";
+const ASSEMBLYAI_TIMEOUT_MS = 30_000;
 
 export type AssemblyAITranscript = {
   id: string;
@@ -20,16 +21,17 @@ export async function submitAssemblyAITranscript(input: {
     throw new AppStoreError("ASSEMBLYAI_API_KEY is not configured.");
   }
 
+  const speechModels = normalizeSpeechModels(input.speechModel);
   const body = {
     audio_url: input.audioUrl,
-    ...(input.speechModel ? { speech_model: input.speechModel } : {}),
+    ...(speechModels.length > 0 ? { speech_models: speechModels } : {}),
     ...(input.languageCode ? { language_code: input.languageCode } : {}),
     speaker_labels: true,
     punctuate: true,
     format_text: true,
   };
 
-  const response = await fetch(ASSEMBLYAI_TRANSCRIPT_URL, {
+  const response = await fetchAssemblyAI(ASSEMBLYAI_TRANSCRIPT_URL, {
     method: "POST",
     headers: {
       Authorization: apiKey,
@@ -53,7 +55,7 @@ export async function getAssemblyAITranscript(id: string): Promise<AssemblyAITra
     throw new AppStoreError("ASSEMBLYAI_API_KEY is not configured.");
   }
 
-  const response = await fetch(`${ASSEMBLYAI_TRANSCRIPT_URL}/${encodeURIComponent(id)}`, {
+  const response = await fetchAssemblyAI(`${ASSEMBLYAI_TRANSCRIPT_URL}/${encodeURIComponent(id)}`, {
     headers: {
       Authorization: apiKey,
     },
@@ -83,6 +85,35 @@ function normalizeTranscript(raw: unknown): AssemblyAITranscript {
     text: typeof raw.text === "string" ? raw.text : "",
     raw,
   };
+}
+
+async function fetchAssemblyAI(url: string, init: RequestInit) {
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(ASSEMBLYAI_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "AssemblyAI request failed.";
+    throw new AppStoreError(`AssemblyAI request timed out or failed: ${message}`, 504);
+  }
+}
+
+export function normalizeSpeechModels(value: string | undefined) {
+  if (!value?.trim()) {
+    return [];
+  }
+
+  const normalized = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (normalized.length === 0 || normalized.includes("best")) {
+    return ["universal-2"];
+  }
+
+  return normalized;
 }
 
 async function readJsonOrText(response: Response) {

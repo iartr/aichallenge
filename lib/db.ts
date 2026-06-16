@@ -2,6 +2,7 @@ import postgres from "postgres";
 
 export type SqlClient = ReturnType<typeof postgres>;
 export type JsonRecord = Record<string, unknown>;
+export type JsonValue = postgres.JSONValue;
 
 const DEFAULT_SSL = "require";
 
@@ -37,6 +38,10 @@ export function getSql() {
   }
 
   return globalThis.interviewCoachSql;
+}
+
+export function sqlJson(value: unknown) {
+  return getSql().json(value as JsonValue);
 }
 
 export async function ensureAppSchema() {
