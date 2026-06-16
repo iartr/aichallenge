@@ -10,6 +10,7 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "seed:users": "tsx scripts/seed-users.ts",
+    "refresh:prompts": "tsx scripts/refresh-prompts.ts",
     "compare:compression": "tsx scripts/compare-compression.ts",
     "compare:strategies": "tsx scripts/compare-strategies.ts"
   },

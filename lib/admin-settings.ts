@@ -49,7 +49,7 @@ export const DEFAULT_SYSTEM_PROMPT = `Ты интервью-ассистент �
 
 Не смешивай task memory и profile memory. Любое новое profile memory должно быть оформлено как candidateProfileMemory и ждать отдельного подтверждения пользователя.`;
 
-export const DEFAULT_USER_PROMPT_TEMPLATE = `Проанализируй интервью и верни JSON без markdown.
+export const DEFAULT_USER_PROMPT_TEMPLATE = `Проанализируй интервью и верни ТОЛЬКО валидный JSON без markdown и без пояснений вокруг.
 
 Контекст интервью:
 {{interviewContext}}
@@ -66,10 +66,18 @@ Profile memory, сохраненная явно:
 Knowledge memory продукта:
 {{knowledgeMemory}}
 
+Правила разбора:
+- Пиши все тексты на русском языке.
+- Опирайся строго на транскрипт: каждую оценку, ошибку и сильную сторону подкрепляй цитатой или пересказом конкретного момента из записи. Не выдумывай факты, которых нет в транскрипте.
+- Если транскрипт пустой или данных не хватает для вывода, верни пустые массивы и score = null, а не догадки.
+- В competencies оцени реальные компетенции, прозвучавшие в интервью; score по шкале 0-10 с учётом целевого уровня. Если компетенция в записи не проявилась — не добавляй её.
+- В timeline и mistakes указывай таймкоды (time) из транскрипта, где это возможно.
+
 Верни JSON по схеме:
 {
   "score": number,
   "summary": string,
+  "competencies": [{"name": string, "score": number, "evidence": string}],
   "timeline": [{"time": string, "event": string, "feedback": string}],
   "mistakes": [{"topic": string, "evidence": string, "impact": string, "betterAnswer": string}],
   "strengths": [{"topic": string, "evidence": string}],

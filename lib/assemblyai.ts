@@ -25,7 +25,9 @@ export async function submitAssemblyAITranscript(input: {
   const body = {
     audio_url: input.audioUrl,
     ...(speechModels.length > 0 ? { speech_models: speechModels } : {}),
-    ...(input.languageCode ? { language_code: input.languageCode } : {}),
+    // Interviews are usually Russian; auto-detect unless a language is pinned so
+    // the transcript (and therefore the разбор) comes back in the right language.
+    ...(input.languageCode ? { language_code: input.languageCode } : { language_detection: true }),
     speaker_labels: true,
     punctuate: true,
     format_text: true,

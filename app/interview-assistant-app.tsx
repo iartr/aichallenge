@@ -67,7 +67,6 @@ type SessionResponse = {
 
 type Screen = "landing" | "upload" | "processing" | "feedback" | "chat" | "admin";
 type AdminSubtab = "models" | "prompts" | "memory" | "mcp" | "rag";
-type ProcessingMode = "create" | "transcribe" | "analyze";
 type LayerKey = "working" | "task" | "profile" | "knowledge";
 
 type FeedbackView = {
@@ -75,6 +74,7 @@ type FeedbackView = {
   scoreCaption: string;
   summary: string;
   competencies: CompetencyView[];
+  mistakes: MistakeView[];
   strengths: string[];
   weaknesses: string[];
   moments: MomentView[];
@@ -85,6 +85,20 @@ type CompetencyView = {
   name: string;
   score: number;
   color: string;
+};
+
+type MistakeView = {
+  topic: string;
+  evidence: string;
+  impact: string;
+  betterAnswer: string;
+};
+
+type PipelineView = {
+  stage: string;
+  percent: number;
+  message: string;
+  errorCode: string;
 };
 
 type MomentView = {
@@ -112,6 +126,9 @@ type IntegrationItem = {
 const LEVELS = ["Junior", "Junior+", "Middle", "Middle+", "Senior", "Tech Lead", "Team Lead"];
 const TYPES = ["HR-скрининг", "Техническое интервью", "System Design", "Финальное интервью", "Soft skills"];
 const POSITIONS = ["Android-разработчик", "iOS-разработчик", "Frontend", "Backend", "QA-инженер", "Game Dev"];
+
+const SAMPLE_YANDEX_LINK = "https://disk.yandex.ru/d/fM1GdCsB_WvJcQ";
+const IN_PROGRESS_STATUSES = new Set(["transcribing", "analyzing"]);
 
 const DEFAULT_CHAT = "Как здесь можно было ответить сильнее?";
 
@@ -147,7 +164,6 @@ export function InterviewAssistantApp() {
   const [knowledgeMemory, setKnowledgeMemory] = useState<MemoryItem[]>([]);
   const [recordingFile, setRecordingFile] = useState<File | null>(null);
   const [screenshotFiles, setScreenshotFiles] = useState<File[]>([]);
-  const [processingMode, setProcessingMode] = useState<ProcessingMode>("create");
   const [showPrompt, setShowPrompt] = useState(false);
   const [layerEnabled, setLayerEnabled] = useState<Record<LayerKey, boolean>>({
     working: true,
@@ -162,7 +178,6 @@ export function InterviewAssistantApp() {
     interviewType: "Техническое интервью",
     sourceUrl: "",
   });
-  const [transcriptId, setTranscriptId] = useState("");
   const [chatText, setChatText] = useState(DEFAULT_CHAT);
   const [profileStatement, setProfileStatement] = useState("");
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
@@ -174,6 +189,7 @@ export function InterviewAssistantApp() {
   }, [selected]);
 
   const feedback = useMemo(() => deriveFeedbackView(selected), [selected]);
+  const pipeline = useMemo(() => derivePipeline(selected), [selected]);
   const memoryLayers = useMemo(
     () => deriveMemoryLayers(selected, profileMemory, knowledgeMemory),
     [selected, profileMemory, knowledgeMemory],
@@ -244,6 +260,61 @@ export function InterviewAssistantApp() {
     }
   }, [selectedId, loadInterview]);
 
+  // While the разбор is running, poll the interview so progress stays live and
+  // auto-open the result (or surface an error) the moment the pipeline finishes.
+  useEffect(() => {
+    if (screen !== "processing" || !selectedId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const data = await apiGet<{ interview: Interview }>(`/api/interviews/${selectedId}`);
+
+        if (cancelled) {
+          return;
+        }
+
+        setSelected(data.interview);
+
+        if (data.interview.status === "analyzed") {
+          setStatus("Готово");
+          setError("");
+          setScreen("feedback");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          await loadInterviews();
+        } else if (data.interview.status === "error") {
+          setStatus("Ошибка");
+          setError(data.interview.errorMessage || "Не удалось выполнить разбор.");
+        }
+      } catch {
+        // Transient error — keep polling on the next tick.
+      }
+    };
+
+    void poll();
+    const interval = setInterval(() => {
+      void poll();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [screen, selectedId, loadInterviews]);
+
+  // Reopening a still-running interview drops back into the live progress view.
+  useEffect(() => {
+    if (screen === "feedback" && selected && IN_PROGRESS_STATUSES.has(selected.status)) {
+      deferAsync(async () => {
+        setScreen("processing");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
+  }, [screen, selected]);
+
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -284,15 +355,21 @@ export function InterviewAssistantApp() {
 
   async function createInterviewFlow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setProcessingMode("create");
+    setError("");
+
+    if (!recordingFile && !form.sourceUrl.trim()) {
+      setError("Добавь файл записи или ссылку на запись (например, публичную ссылку Яндекс.Диска).");
+      return;
+    }
+
     setScreen("processing");
     setStatus("Создаю разбор");
-    setError("");
 
     try {
       const data = await apiPost<{ interview: Interview }>("/api/interviews", {
         ...form,
-        sourceType: form.sourceUrl ? "url" : "upload",
+        sourceUrl: form.sourceUrl.trim(),
+        sourceType: form.sourceUrl.trim() ? "url" : "upload",
       });
       const interviewId = data.interview.id;
 
@@ -304,14 +381,34 @@ export function InterviewAssistantApp() {
         await uploadFile(interviewId, "screenshot", file);
       }
 
+      // One click: kick off the full server-side pipeline, then let polling
+      // drive the live progress UI until the разбор is ready.
+      await apiPost(`/api/interviews/${interviewId}/actions`, { action: "start" });
       setSelectedId(interviewId);
       await Promise.all([loadInterviews(), loadInterview(interviewId)]);
-      setStatus("Разбор создан");
-      setScreen("feedback");
+      setStatus("Разбор запущен");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Ошибка создания разбора");
       setStatus("Ошибка");
       setScreen("upload");
+    }
+  }
+
+  async function retryAnalysis() {
+    if (!selectedId) {
+      return;
+    }
+
+    setError("");
+    setStatus("Перезапуск разбора");
+    setScreen("processing");
+
+    try {
+      await apiPost(`/api/interviews/${selectedId}/actions`, { action: "start" });
+      await loadInterview(selectedId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Не удалось перезапустить разбор");
+      setStatus("Ошибка");
     }
   }
 
@@ -347,37 +444,20 @@ export function InterviewAssistantApp() {
       return;
     }
 
-    if (actionName === "transcribe" || actionName === "analyze") {
-      setProcessingMode(actionName);
-      setScreen("processing");
-    }
-
     setStatus(actionName);
     setError("");
 
     try {
-      const data = await apiPost<Record<string, unknown>>(`/api/interviews/${selectedId}/actions`, {
+      await apiPost<Record<string, unknown>>(`/api/interviews/${selectedId}/actions`, {
         action: actionName,
         ...payload,
       });
 
-      if (actionName === "transcribe" && isRecord(data.transcript) && typeof data.transcript.id === "string") {
-        setTranscriptId(data.transcript.id);
-      }
-
       await Promise.all([loadInterviews(), loadInterview(selectedId), loadMemory()]);
       setStatus("Готово");
-
-      if (actionName === "transcribe" || actionName === "analyze") {
-        setScreen("feedback");
-      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action failed");
       setStatus("Ошибка");
-
-      if (actionName === "transcribe" || actionName === "analyze") {
-        setScreen("feedback");
-      }
     }
   }
 
@@ -498,18 +578,11 @@ export function InterviewAssistantApp() {
       ) : null}
 
       {screen === "processing" ? (
-        <ProcessingScreen mode={processingMode} selected={selected} form={form} status={status} go={go} />
+        <ProcessingScreen selected={selected} form={form} pipeline={pipeline} error={error} onRetry={retryAnalysis} go={go} />
       ) : null}
 
       {screen === "feedback" ? (
-        <FeedbackScreen
-          selected={selected}
-          feedback={feedback}
-          transcriptId={transcriptId}
-          setTranscriptId={setTranscriptId}
-          action={action}
-          go={go}
-        />
+        <FeedbackScreen selected={selected} feedback={feedback} go={go} />
       ) : null}
 
       {screen === "chat" ? (
@@ -750,17 +823,29 @@ function UploadScreen({
             <div className="source-grid">
               <div><strong>С устройства</strong><span>файл</span></div>
               <div><strong>Яндекс.Диск</strong><span>по ссылке</span></div>
-              <div><strong>Google Drive</strong><span>по ссылке</span></div>
+              <div><strong>Прямая ссылка</strong><span>.mp3 / .mp4</span></div>
             </div>
 
-            <label className="link-panel">
-              <span>Ссылка на запись</span>
+            <div className="link-panel">
+              <div className="link-panel-head">
+                <span>Ссылка на запись (Яндекс.Диск или прямая ссылка)</span>
+                <button
+                  type="button"
+                  className="of-link-button"
+                  onClick={() => setForm({ ...form, sourceUrl: SAMPLE_YANDEX_LINK })}
+                >
+                  Вставить пример
+                </button>
+              </div>
               <input
                 value={form.sourceUrl}
                 onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })}
-                placeholder="https://storage.googleapis.com/aai-web-samples/5_common_sports_injuries.mp3"
+                placeholder={SAMPLE_YANDEX_LINK}
               />
-            </label>
+              <em className="link-hint">
+                Вставь публичную ссылку Яндекс.Диска на запись — файл достанем сами. Подойдёт и прямая ссылка на медиафайл.
+              </em>
+            </div>
 
             <label className="screens-panel">
               <input
@@ -820,25 +905,31 @@ function UploadScreen({
 }
 
 function ProcessingScreen({
-  mode,
   selected,
   form,
-  status,
+  pipeline,
+  error,
+  onRetry,
   go,
 }: {
-  mode: ProcessingMode;
   selected: Interview | null;
   form: { company: string; position: string; targetLevel: string; interviewType: string };
-  status: string;
+  pipeline: PipelineView | null;
+  error: string;
+  onRetry: () => void;
   go: (screen: Screen) => void;
 }) {
-  const progress = mode === "create" ? 42 : mode === "transcribe" ? 62 : 84;
+  const isError = selected?.status === "error" || pipeline?.stage === "error";
   const stages = [
-    { label: "Загрузка файла", active: mode === "create" || selected?.assets?.length },
-    { label: "Транскрибация (AssemblyAI)", active: mode === "transcribe" || Boolean(selected?.transcript) },
-    { label: "LLM-анализ", active: mode === "analyze" || selected?.status === "analyzed" },
-    { label: "Готово", active: status === "Готово" || selected?.status === "analyzed" },
+    { key: "resolving", label: "Получаем запись" },
+    { key: "transcribing", label: "Транскрибация (AssemblyAI)" },
+    { key: "analyzing", label: "LLM-анализ" },
+    { key: "done", label: "Готово" },
   ];
+  const stageIndex: Record<string, number> = { queued: 0, resolving: 0, transcribing: 1, analyzing: 2, done: 3 };
+  const activeIndex = pipeline ? stageIndex[pipeline.stage] ?? 0 : 0;
+  const percent = Math.max(0, Math.min(100, Math.round(pipeline?.percent ?? 5)));
+  const message = pipeline?.message || "Готовим разбор…";
 
   return (
     <div className="of-app-page min-screen">
@@ -848,23 +939,40 @@ function ProcessingScreen({
           <div className="of-overline">
             {(selected?.company || form.company || "Интервью")} · {(selected?.position || form.position)} · {(selected?.targetLevel || form.targetLevel)}
           </div>
-          <h1>Разбираем запись</h1>
-          <div className="progress-number">
-            <strong>{progress}</strong>
-            <span>%</span>
-          </div>
-          <div className="progress-bar"><span style={{ width: `${progress}%` }} /></div>
-          <div className="stage-list">
-            {stages.map((stage, index) => (
-              <div key={stage.label} className={stage.active ? "stage active" : "stage"}>
-                <span>{index + 1}</span>
-                <strong>{stage.label}</strong>
+
+          {isError ? (
+            <>
+              <h1>Не удалось получить разбор</h1>
+              <p className="processing-stage-message">{error || selected?.errorMessage || "Что-то пошло не так во время разбора."}</p>
+              <div className="processing-actions">
+                <button className="of-primary wide" type="button" onClick={onRetry}>Повторить</button>
+                <button className="of-secondary wide" type="button" onClick={() => go("upload")}>Изменить данные</button>
               </div>
-            ))}
-          </div>
-          <button className="of-primary wide" type="button" onClick={() => go("feedback")}>Открыть разбор</button>
+            </>
+          ) : (
+            <>
+              <h1>Разбираем запись</h1>
+              <div className="progress-number">
+                <strong>{percent}</strong>
+                <span>%</span>
+              </div>
+              <div className="progress-bar"><span style={{ width: `${percent}%` }} /></div>
+              <p className="processing-stage-message">{message}</p>
+              <div className="stage-list">
+                {stages.map((stage, index) => (
+                  <div key={stage.key} className={index <= activeIndex ? "stage active" : "stage"}>
+                    <span>{index + 1}</span>
+                    <strong>{stage.label}</strong>
+                  </div>
+                ))}
+              </div>
+              {selected?.status === "analyzed" ? (
+                <button className="of-primary wide" type="button" onClick={() => go("feedback")}>Открыть разбор</button>
+              ) : null}
+            </>
+          )}
         </div>
-        <p>Тестируем приложение... обычно занимает несколько минут на запись длиной в час.</p>
+        <p>Можно закрыть вкладку и вернуться позже — разбор продолжит готовиться на сервере. Для часовой записи это обычно несколько минут.</p>
       </div>
     </div>
   );
@@ -873,16 +981,10 @@ function ProcessingScreen({
 function FeedbackScreen({
   selected,
   feedback,
-  transcriptId,
-  setTranscriptId,
-  action,
   go,
 }: {
   selected: Interview | null;
   feedback: FeedbackView;
-  transcriptId: string;
-  setTranscriptId: (value: string) => void;
-  action: (actionName: string, payload?: Record<string, unknown>) => Promise<void>;
   go: (screen: Screen) => void;
 }) {
   if (!selected) {
@@ -893,6 +995,8 @@ function FeedbackScreen({
       </div>
     );
   }
+
+  const isAnalyzed = selected.status === "analyzed";
 
   return (
     <div className="of-app-page">
@@ -914,70 +1018,100 @@ function FeedbackScreen({
           </div>
         </section>
 
-        {selected.status !== "analyzed" ? (
+        {!isAnalyzed ? (
           <section className="action-panel">
             <div>
-              <h2>Реальные действия</h2>
-              <p>Можно запустить транскрибацию, проверить AssemblyAI job или сразу выполнить короткий LLM-анализ.</p>
+              <h2>{selected.status === "error" ? "Разбор не завершился" : "Разбор ещё готовится"}</h2>
+              <p>
+                {selected.status === "error"
+                  ? selected.errorMessage || "Произошла ошибка. Открой статус, чтобы повторить."
+                  : "Транскрибация и анализ идут автоматически. Можно подождать здесь или открыть статус обработки."}
+              </p>
             </div>
             <div className="action-buttons">
-              <button type="button" onClick={() => action("transcribe")}>Запустить AssemblyAI</button>
-              <label>
-                <input value={transcriptId} onChange={(event) => setTranscriptId(event.target.value)} placeholder="AssemblyAI transcript id" />
-                <button type="button" onClick={() => action("transcribe", { transcriptId })}>Проверить</button>
-              </label>
-              <button type="button" className="of-primary" onClick={() => action("analyze")}>Запустить LLM-анализ</button>
+              <button type="button" className="of-primary" onClick={() => go("processing")}>Открыть статус</button>
             </div>
           </section>
         ) : null}
 
-        <section className="of-card competencies-card">
-          <h2>Оценка по компетенциям</h2>
-          <div className="competency-list">
-            {feedback.competencies.map((competency) => (
-              <div key={competency.name}>
-                <div className="competency-head">
-                  <span>{competency.name}</span>
-                  <strong style={{ color: competency.color }}>{competency.score.toFixed(1)}</strong>
+        {feedback.summary ? (
+          <section className="of-card">
+            <h2>Резюме</h2>
+            <p className="feedback-summary">{feedback.summary}</p>
+          </section>
+        ) : null}
+
+        {feedback.competencies.length > 0 ? (
+          <section className="of-card competencies-card">
+            <h2>Оценка по компетенциям</h2>
+            <div className="competency-list">
+              {feedback.competencies.map((competency) => (
+                <div key={competency.name}>
+                  <div className="competency-head">
+                    <span>{competency.name}</span>
+                    <strong style={{ color: competency.color }}>{competency.score.toFixed(1)}</strong>
+                  </div>
+                  <div className="mini-bar"><span style={{ width: `${Math.min(100, Math.max(0, competency.score * 10))}%`, background: competency.color }} /></div>
                 </div>
-                <div className="mini-bar"><span style={{ width: `${Math.min(100, Math.max(0, competency.score * 10))}%`, background: competency.color }} /></div>
-              </div>
-            ))}
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {feedback.strengths.length > 0 || feedback.weaknesses.length > 0 ? (
+          <div className="two-card-grid">
+            {feedback.strengths.length > 0 ? <InsightCard icon="check" title="Сильные стороны" items={feedback.strengths} /> : null}
+            {feedback.weaknesses.length > 0 ? <InsightCard icon="alert" title="Слабые места" items={feedback.weaknesses} muted /> : null}
           </div>
-        </section>
+        ) : null}
 
-        <div className="two-card-grid">
-          <InsightCard icon="check" title="Сильные стороны" items={feedback.strengths} />
-          <InsightCard icon="alert" title="Слабые места" items={feedback.weaknesses} muted />
-        </div>
-
-        <section className="of-card">
-          <h2>Ключевые моменты по таймкодам</h2>
-          <div className="moment-list">
-            {feedback.moments.map((moment) => (
-              <div key={`${moment.time}-${moment.text}`} className="moment-row">
-                <time>{moment.time}</time>
-                <div>
-                  <span className={moment.tagTone === "brand" ? "tag brand" : "tag"}>{moment.tag}</span>
-                  <p>{moment.text}</p>
+        {feedback.mistakes.length > 0 ? (
+          <section className="of-card mistakes-card">
+            <h2>Ошибки и как ответить сильнее</h2>
+            <div className="mistake-list">
+              {feedback.mistakes.map((mistake, index) => (
+                <div key={`${mistake.topic}-${index}`} className="mistake-row">
+                  <h3>{mistake.topic || `Момент ${index + 1}`}</h3>
+                  {mistake.evidence ? <p><span className="mistake-label">Что было:</span> {mistake.evidence}</p> : null}
+                  {mistake.impact ? <p><span className="mistake-label">Почему важно:</span> {mistake.impact}</p> : null}
+                  {mistake.betterAnswer ? <p><span className="mistake-label">Как лучше:</span> {mistake.betterAnswer}</p> : null}
                 </div>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-        <section className="of-card">
-          <h2>Рекомендации</h2>
-          <div className="recommendation-list">
-            {feedback.recommendations.map((recommendation, index) => (
-              <div key={recommendation}>
-                <span>{index + 1}</span>
-                <p>{recommendation}</p>
-              </div>
-            ))}
-          </div>
-          <button type="button" className="of-primary" onClick={() => go("chat")}>Обсудить разбор с ассистентом</button>
-        </section>
+        {feedback.moments.length > 0 ? (
+          <section className="of-card">
+            <h2>Ключевые моменты по таймкодам</h2>
+            <div className="moment-list">
+              {feedback.moments.map((moment) => (
+                <div key={`${moment.time}-${moment.text}`} className="moment-row">
+                  <time>{moment.time}</time>
+                  <div>
+                    <span className={moment.tagTone === "brand" ? "tag brand" : "tag"}>{moment.tag}</span>
+                    <p>{moment.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {feedback.recommendations.length > 0 ? (
+          <section className="of-card">
+            <h2>Рекомендации</h2>
+            <div className="recommendation-list">
+              {feedback.recommendations.map((recommendation, index) => (
+                <div key={recommendation}>
+                  <span>{index + 1}</span>
+                  <p>{recommendation}</p>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="of-primary" onClick={() => go("chat")}>Обсудить разбор с ассистентом</button>
+          </section>
+        ) : null}
 
         <details className="transcript-details">
           <summary>Транскрипт и raw output</summary>
@@ -1678,138 +1812,180 @@ function Icon({ name, size }: { name: IconName; size: number }) {
 function deriveFeedbackView(selected: Interview | null): FeedbackView {
   const output = selected?.llmOutput ?? {};
   const taskMemory = selected?.taskMemory ?? {};
+  const isAnalyzed = selected?.status === "analyzed";
   const score = readNumber(output.score);
-  const fallbackScore = selected?.status === "analyzed" ? 6.4 : null;
-  const resolvedScore = score ?? fallbackScore;
-  const summary = readString(output.summary) || readString(taskMemory.finalFeedback) || "После анализа здесь появится краткое резюме: что получилось, где ответ был неполным и какие темы подтянуть.";
+  const summary = readString(output.summary) || readString(taskMemory.finalFeedback) || "";
 
   return {
-    score: resolvedScore,
-    scoreCaption: resolvedScore === null ? "анализ не запущен" : `из 10 · ${scoreCaption(resolvedScore)}`,
+    score,
+    scoreCaption:
+      score === null
+        ? isAnalyzed
+          ? "оценка не указана моделью"
+          : "разбор ещё готовится"
+        : `из 10 · ${scoreCaption(score)}`,
     summary,
-    competencies: readCompetencies(output.competencies, resolvedScore),
-    strengths: readInsightList(output.strengths ?? taskMemory.strengths, [
-      "Контекст интервью сохранён отдельно в task memory.",
-      "После анализа сильные стороны будут связаны с конкретными доказательствами из транскрипта.",
-      "Profile memory не записывается автоматически без явного подтверждения.",
-    ]),
-    weaknesses: readInsightList(output.weaknesses ?? taskMemory.weaknesses, [
-      "Запусти LLM-анализ, чтобы получить реальные слабые места по ответам.",
-      "Если есть только ссылка на запись, сначала проверь, что AssemblyAI может скачать файл.",
-      "Короткий chat после анализа покажет, как working memory отделена от profile memory.",
-    ]),
-    moments: readMoments(output.timeline, selected),
-    recommendations: readRecommendations(output, [
-      "Запусти транскрибацию и короткий LLM-анализ на mini-модели.",
-      "После анализа задай ассистенту один уточняющий вопрос по самому слабому месту.",
-      "Сохраняй profile memory только через явное действие в админке или предложении ассистента.",
-    ]),
+    competencies: readCompetencies(output.competencies),
+    mistakes: readMistakes(output.mistakes),
+    strengths: readInsightList(output.strengths ?? taskMemory.strengths),
+    weaknesses: readInsightList(output.weaknesses ?? taskMemory.weaknesses),
+    moments: readMoments(output.timeline),
+    recommendations: readRecommendations(output),
   };
 }
 
-function readCompetencies(value: unknown, score: number | null): CompetencyView[] {
-  const base = [
-    "Технические знания",
-    "Системный дизайн",
-    "Алгоритмы и структуры данных",
-    "Коммуникация и мышление вслух",
-    "Поведение и культура",
-  ];
+function derivePipeline(selected: Interview | null): PipelineView | null {
+  const meta = selected?.transcriptMetadata;
+  const pipeline = meta && isRecord(meta.pipeline) ? (meta.pipeline as Record<string, unknown>) : null;
 
-  if (Array.isArray(value) && value.length > 0) {
-    return value.slice(0, 6).map((item, index) => {
-      const record = isRecord(item) ? item : {};
-      const itemScore = readNumber(record.score ?? record.value ?? record.rating) ?? score ?? 5 + index * 0.2;
-      return {
-        name: readString(record.name ?? record.topic ?? record.title) || base[index] || `Компетенция ${index + 1}`,
-        score: itemScore,
-        color: scoreColor(itemScore),
-      };
-    });
+  if (!pipeline) {
+    return null;
   }
 
-  const root = score ?? 0;
-  const fallback = root > 0 ? [root + 0.4, root - 0.8, root, root - 0.4, root + 0.8] : [0, 0, 0, 0, 0];
-  return base.map((name, index) => {
-    const itemScore = Math.min(10, Math.max(0, fallback[index] ?? 0));
-    return { name, score: itemScore, color: scoreColor(itemScore) };
-  });
+  return {
+    stage: readString(pipeline.stage) || "queued",
+    percent: readNumber(pipeline.percent) ?? 0,
+    message: readString(pipeline.message),
+    errorCode: readString(pipeline.errorCode),
+  };
 }
 
-function readInsightList(value: unknown, fallback: string[]) {
+// Show only competencies the model actually scored — no synthetic offsets.
+function readCompetencies(value: unknown): CompetencyView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, 8)
+    .map((item, index) => {
+      const record = isRecord(item) ? item : {};
+      const name = readString(record.name ?? record.topic ?? record.title);
+      const itemScore = readNumber(record.score ?? record.value ?? record.rating);
+
+      if (!name || itemScore === null) {
+        return null;
+      }
+
+      const clamped = Math.min(10, Math.max(0, itemScore));
+      return { name: name || `Компетенция ${index + 1}`, score: clamped, color: scoreColor(clamped) };
+    })
+    .filter((item): item is CompetencyView => item !== null);
+}
+
+function readMistakes(value: unknown): MistakeView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, 8)
+    .map((item) => {
+      if (typeof item === "string") {
+        return { topic: item, evidence: "", impact: "", betterAnswer: "" };
+      }
+
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const mistake: MistakeView = {
+        topic: readString(item.topic ?? item.title ?? item.name),
+        evidence: readString(item.evidence ?? item.quote ?? item.text),
+        impact: readString(item.impact ?? item.consequence),
+        betterAnswer: readString(item.betterAnswer ?? item.better ?? item.recommendation ?? item.fix),
+      };
+
+      if (!mistake.topic && !mistake.evidence && !mistake.impact && !mistake.betterAnswer) {
+        return null;
+      }
+
+      return mistake;
+    })
+    .filter((item): item is MistakeView => item !== null);
+}
+
+function readInsightList(value: unknown): string[] {
   if (!Array.isArray(value) || value.length === 0) {
-    return fallback;
+    return [];
   }
 
-  return value.slice(0, 5).map((item) => {
-    if (typeof item === "string") {
-      return item;
-    }
-
-    if (!isRecord(item)) {
-      return JSON.stringify(item);
-    }
-
-    const topic = readString(item.topic ?? item.title ?? item.name);
-    const evidence = readString(item.evidence ?? item.feedback ?? item.text ?? item.reason);
-    const plan = readString(item.trainingPlan ?? item.recommendation);
-    return [topic, evidence, plan].filter(Boolean).join(" — ");
-  });
-}
-
-function readMoments(value: unknown, selected: Interview | null): MomentView[] {
-  if (Array.isArray(value) && value.length > 0) {
-    return value.slice(0, 6).map((item, index) => {
-      const record = isRecord(item) ? item : {};
-      const tag = readString(record.event ?? record.tag ?? record.type) || (index === 0 ? "Сильно" : "Момент");
-      return {
-        time: readString(record.time ?? record.timestamp) || `${String(index * 7 + 1).padStart(2, "0")}:00`,
-        tag,
-        tagTone: /сильно|good|ok/i.test(tag) ? "brand" : "muted",
-        text: readString(record.feedback ?? record.text ?? record.summary) || JSON.stringify(item),
-      };
-    });
-  }
-
-  if (selected?.transcript) {
-    return [
-      { time: "00:00", tag: "Транскрипт", tagTone: "brand", text: "Расшифровка загружена. Запусти LLM-анализ, чтобы получить таймкоды ошибок и сильных ответов." },
-      { time: "--:--", tag: "Ожидает", tagTone: "muted", text: "Timeline появится после structured JSON output от модели." },
-    ];
-  }
-
-  return [
-    { time: "--:--", tag: "Ожидает", tagTone: "muted", text: "Ключевые моменты появятся после транскрибации и анализа записи." },
-  ];
-}
-
-function readRecommendations(output: Record<string, unknown>, fallback: string[]) {
-  const gaps = output.knowledgeGaps;
-  if (Array.isArray(gaps) && gaps.length > 0) {
-    return gaps.slice(0, 5).map((item) => {
+  return value
+    .slice(0, 6)
+    .map((item) => {
       if (typeof item === "string") {
         return item;
       }
 
       if (!isRecord(item)) {
-        return JSON.stringify(item);
+        return "";
       }
 
-      return [readString(item.topic), readString(item.recommendation)].filter(Boolean).join(" — ");
-    });
+      const topic = readString(item.topic ?? item.title ?? item.name);
+      const evidence = readString(item.evidence ?? item.feedback ?? item.text ?? item.reason);
+      const plan = readString(item.trainingPlan ?? item.recommendation);
+      return [topic, evidence, plan].filter(Boolean).join(" — ");
+    })
+    .filter(Boolean);
+}
+
+function readMoments(value: unknown): MomentView[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [];
+  }
+
+  return value
+    .slice(0, 8)
+    .map((item) => {
+      const record = isRecord(item) ? item : {};
+      const tag = readString(record.event ?? record.tag ?? record.type) || "Момент";
+      return {
+        time: readString(record.time ?? record.timestamp) || "—",
+        tag,
+        tagTone: /сильно|strong|good|ok|плюс/i.test(tag) ? ("brand" as const) : ("muted" as const),
+        text: readString(record.feedback ?? record.text ?? record.summary),
+      };
+    })
+    .filter((moment) => Boolean(moment.text));
+}
+
+function readRecommendations(output: Record<string, unknown>): string[] {
+  const gaps = output.knowledgeGaps;
+
+  if (Array.isArray(gaps) && gaps.length > 0) {
+    const list = gaps
+      .slice(0, 6)
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+
+        if (!isRecord(item)) {
+          return "";
+        }
+
+        return [readString(item.topic), readString(item.recommendation)].filter(Boolean).join(" — ");
+      })
+      .filter(Boolean);
+
+    if (list.length > 0) {
+      return list;
+    }
   }
 
   const weaknesses = output.weaknesses;
+
   if (Array.isArray(weaknesses)) {
     const plans = weaknesses
       .map((item) => (isRecord(item) ? readString(item.trainingPlan ?? item.recommendation) : ""))
       .filter(Boolean);
+
     if (plans.length > 0) {
       return plans;
     }
   }
 
-  return fallback;
+  return [];
 }
 
 function deriveMemoryLayers(selected: Interview | null, profileMemory: MemoryItem[], knowledgeMemory: MemoryItem[]): MemoryLayerView[] {

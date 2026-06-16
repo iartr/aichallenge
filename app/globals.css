@@ -888,10 +888,39 @@ pre {
 }
 
 .link-panel > span,
+.link-panel-head span,
 .panel-row strong {
   color: var(--body);
   font-size: 14px;
   font-weight: 600;
+}
+
+.link-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.of-link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--brand-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.of-link-button:hover {
+  text-decoration: underline;
+}
+
+.link-hint {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.5;
 }
 
 .panel-row {
@@ -1183,6 +1212,63 @@ pre {
 
 .action-buttons label input {
   padding: 11px 14px;
+}
+
+.processing-stage-message {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.processing-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.feedback-summary {
+  margin: 0;
+  color: var(--body);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.mistakes-card .mistake-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.mistake-row {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.mistake-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.mistake-row h3 {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mistake-row p {
+  margin: 0 0 6px;
+  color: var(--body);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.mistake-label {
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 4px;
 }
 
 .competency-list {
