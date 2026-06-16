@@ -319,7 +319,16 @@ export async function runPipeline(userLogin: string, interviewId: string): Promi
 
     // Stage 1 + 2: get a completed transcript (skip if we already have one).
     if (!interview.transcript) {
-      let transcriptId = readStoredAssemblyAITranscriptId(interview.transcriptMetadata);
+      const storedAai = isRecord(interview.transcriptMetadata.assemblyai) ? interview.transcriptMetadata.assemblyai : null;
+      const storedStatus = storedAai && typeof storedAai.status === "string" ? storedAai.status : "";
+      // Only resume a still-live AssemblyAI job. A missing or errored job (e.g. a
+      // failed download/transcoding, or a stale job from before a fix) means we
+      // must resolve the link and resubmit — otherwise a retry just re-polls the
+      // same dead job forever.
+      let transcriptId =
+        storedStatus === "queued" || storedStatus === "processing"
+          ? readStoredAssemblyAITranscriptId(interview.transcriptMetadata)
+          : "";
 
       if (!transcriptId) {
         await writePipeline(
